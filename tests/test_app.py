@@ -61,6 +61,19 @@ def test_pdf_fast_reader(tmp_path: Path):
     assert "Documento pastoral" in sections[0].text
 
 
+def test_missal_romano_is_excluded_from_deployment_base(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    (documents / "Missal Romano - teste.txt").write_text("Nao indexar", encoding="utf-8")
+    (documents / "Catecismo.txt").write_text("Indexar", encoding="utf-8")
+
+    store = LocalVectorStore(documents, tmp_path / "indice.sqlite", 300, 40)
+    status = store.index_documents()
+
+    assert status["documentos"] == 1
+    assert store.document_names() == ["Catecismo.txt"]
+
+
 def test_explicit_source_name_filters_results(tmp_path: Path):
     documents = tmp_path / "Documentos"
     documents.mkdir()

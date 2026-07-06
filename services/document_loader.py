@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import unicodedata
 
 from docx import Document
 from pypdf import PdfReader
@@ -16,6 +18,18 @@ except ImportError:  # Mantem compatibilidade se a dependencia rapida nao estive
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
 
+def _normalized(text: str) -> str:
+    value = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(character for character in value if not unicodedata.combining(character))
+
+
+def _excluded(path: Path) -> bool:
+    configured = os.getenv("EXCLUDED_DOCUMENTS", "missal romano")
+    patterns = [_normalized(item.strip()) for item in configured.split(",") if item.strip()]
+    filename = _normalized(path.name)
+    return any(pattern in filename for pattern in patterns)
+
+
 @dataclass(frozen=True)
 class DocumentSection:
     source: str
@@ -25,7 +39,10 @@ class DocumentSection:
 
 def discover_documents(directory: Path) -> list[Path]:
     return sorted(
-        (path for path in directory.rglob("*") if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS),
+        (
+            path for path in directory.rglob("*")
+            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS and not _excluded(path)
+        ),
         key=lambda path: str(path).lower(),
     )
 

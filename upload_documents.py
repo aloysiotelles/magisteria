@@ -7,12 +7,18 @@ from http.cookiejar import CookieJar
 import json
 from pathlib import Path
 import time
+import unicodedata
 from urllib.error import HTTPError
 from urllib.parse import urlencode, quote
 from urllib.request import build_opener, HTTPCookieProcessor, Request
 
 
 CHUNK_SIZE = 4 * 1024 * 1024
+
+
+def normalized(text: str) -> str:
+    value = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(character for character in value if not unicodedata.combining(character))
 
 
 def request(opener, url: str, *, data: bytes = b"", headers: dict | None = None):
@@ -47,7 +53,9 @@ def main() -> None:
             time.sleep(10)
     files = sorted(
         path for path in args.documentos.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".pdf", ".docx", ".txt"}
+        if path.is_file()
+        and path.suffix.lower() in {".pdf", ".docx", ".txt"}
+        and "missal romano" not in normalized(path.name)
     )
     print(f"Enviando {len(files)} documentos...")
     for position, path in enumerate(files, 1):
