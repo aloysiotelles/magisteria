@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+tests
+test-output
+banco_vetorial/*
+!banco_vetorial/.gitkeep
+Documentos/*
+!Documentos/.gitkeep
+iniciar_magisteria.bat
+launcher.py
+npm-debug.log

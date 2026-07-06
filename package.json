@@ -1,0 +1,15 @@
+{
+  "name": "magister-ia",
+  "version": "0.5.1",
+  "private": true,
+  "description": "Comandos auxiliares para a aplicacao FastAPI MAGISTERIA",
+  "scripts": {
+    "start": "python -m uvicorn app:app --host 0.0.0.0 --port 8000",
+    "dev": "python -m uvicorn app:app --reload",
+    "test": "python -m pytest",
+    "build": "python -m compileall -q app.py config.py services tests"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

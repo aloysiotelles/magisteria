@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Pesquisa pastoral com curadoria das fontes.">
+  <title>MAGISTERIA — Pesquisa pastoral</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', path='/logo-magisteria.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body>
+  <div class="page-shell">
+    <nav class="utility-nav" aria-label="Informações do aplicativo">
+      <button class="utility-button" id="database-button" type="button">Base de dados</button>
+      <button class="utility-button" id="about-button" type="button">Sobre</button>
+    </nav>
+    <header class="hero">
+      <img class="logo" src="{{ url_for('static', path='/logo-magisteria.png') }}" alt="Logo MAGISTERIA">
+      <div class="identity">
+        <p class="eyebrow">Sabedoria da tradição · precisão da tecnologia</p>
+        <h1>MAGISTER<span>IA</span></h1>
+        <p class="subtitle">Pesquisa pastoral com curadoria das fontes.</p>
+        <p class="slogan">PESQUISA CATÓLICA COM CURADORIA - Gaste seu tempo <strong>EVANGELIZANDO</strong>, não pesquisando!</p>
+      </div>
+    </header>
+
+    <main>
+      <section id="search-card" class="search-card" aria-labelledby="search-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Biblioteca documental fechada</p>
+            <h2 id="search-title">O que você deseja pesquisar?</h2>
+          </div>
+          <div id="base-status" class="status-pill" aria-live="polite">
+            <span class="status-dot"></span>
+            <span>Consultando a base…</span>
+          </div>
+        </div>
+
+        <div id="index-progress" class="index-progress hidden" aria-live="polite">
+          <div class="progress-copy">
+            <strong>Atualizando a base documental</strong>
+            <span id="progress-detail">Preparando documentos…</span>
+          </div>
+          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progress-bar" class="progress-bar"></div>
+          </div>
+          <div class="progress-numbers">
+            <span id="progress-percent">0%</span>
+            <span id="progress-eta">Calculando tempo restante…</span>
+          </div>
+        </div>
+
+        <form id="question-form">
+          <label class="sr-only" for="question">Digite sua pergunta</label>
+          <textarea id="question" name="pergunta" rows="4" maxlength="2000"
+            placeholder="Ex.: O que os documentos ensinam sobre a dignidade da pessoa humana?" required></textarea>
+          <div class="actions">
+            <button class="button button-primary" id="search-button" type="submit">
+              <span class="button-icon">⌕</span> Pesquisar
+            </button>
+          </div>
+        </form>
+        <p class="privacy-note">A pesquisa é feita exclusivamente nos documentos cadastrados. Nenhuma busca aberta na internet é realizada.</p>
+      </section>
+
+      <section id="result-panel" class="result-grid hidden" aria-live="polite">
+        <article class="content-card answer-card">
+          <div class="card-title"><span class="ornament">✦</span><h2>Resposta</h2></div>
+          <div id="answer" class="answer-content"></div>
+          <section id="presentation-module" class="presentation-module hidden" aria-labelledby="presentation-title">
+            <p class="section-kicker">ROTEIRO E APRESENTAÇÃO</p>
+            <h3 id="presentation-title">Transforme esta pesquisa em material para apresentar</h3>
+            <p>O conteúdo será organizado em tópicos. Escolha um roteiro editável ou slides ilustrados por IA.</p>
+            <div class="presentation-actions">
+              <button class="button button-secondary" id="create-script-button" type="button">Criar ROTEIRO</button>
+              <button class="button button-primary" id="create-slides-button" type="button">Criar SLIDES</button>
+            </div>
+            <p id="presentation-status" class="presentation-status" aria-live="polite"></p>
+          </section>
+        </article>
+        <aside class="content-card sources-card">
+          <div class="card-title"><span class="ornament">⌘</span><h2>Fontes consultadas</h2></div>
+          <div id="sources"></div>
+        </aside>
+      </section>
+
+      <section id="followup-panel" class="followup-card hidden" aria-labelledby="followup-title">
+        <div>
+          <p class="section-kicker">Continue a conversa</p>
+          <h2 id="followup-title">Deseja aprofundar algum ponto?</h2>
+        </div>
+        <div id="followup-slot"></div>
+        <p class="privacy-note">A continuação permanece limitada aos documentos da base.</p>
+      </section>
+
+      <section id="message-panel" class="message-panel hidden" aria-live="assertive"></section>
+    </main>
+
+    <footer><span class="footer-cross">✠</span> MAGISTER<span>IA</span> · Conteúdo fundamentado nas fontes cadastradas</footer>
+  </div>
+
+  <dialog class="modal" id="database-modal" aria-labelledby="database-title">
+    <div class="modal-header">
+      <div>
+        <p class="section-kicker">Biblioteca documental</p>
+        <h2 id="database-title">Base de dados</h2>
+      </div>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+    </div>
+    <div class="modal-content">
+      <p id="database-summary" class="modal-intro">Consultando documentos…</p>
+      <ul id="database-list" class="document-list"></ul>
+    </div>
+  </dialog>
+
+  <dialog class="modal" id="about-modal" aria-labelledby="about-title">
+    <div class="modal-header">
+      <div>
+        <p class="section-kicker">Créditos</p>
+        <h2 id="about-title">Sobre</h2>
+      </div>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+    </div>
+    <div class="modal-content about-content">
+      <img src="{{ url_for('static', path='/logo-magisteria.png') }}" alt="" class="about-logo">
+      <p>Concebido e desenvolvido mediante IA (Codex OpenIA) por Aloysio Telles de Moraes Netto - aloysiotmn@hotmail.com - @aloysiotelles</p>
+    </div>
+  </dialog>
+  <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+</body>
+</html>
