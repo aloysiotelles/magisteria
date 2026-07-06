@@ -54,7 +54,7 @@ def test_pdf_fast_reader(tmp_path: Path):
         page.insert_text((72, 72), "Documento pastoral de teste")
         pdf.save(pdf_path)
 
-    sections = load_document(pdf_path, documents)
+    sections = list(load_document(pdf_path, documents))
 
     assert sections[0].source == "fonte.pdf"
     assert sections[0].location == "página 1"

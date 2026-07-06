@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from pypdf import PdfReader
 
 try:
     import pymupdf
-except ImportError:  # Mantém compatibilidade até a instalação das dependências.
+except ImportError:  # Mantem compatibilidade se a dependencia rapida nao estiver instalada.
     pymupdf = None
 
 
@@ -29,50 +30,49 @@ def discover_documents(directory: Path) -> list[Path]:
     )
 
 
-def load_document(path: Path, base_directory: Path) -> list[DocumentSection]:
+def load_document(path: Path, base_directory: Path) -> Iterator[DocumentSection]:
+    """Le o documento progressivamente para limitar o uso de memoria."""
     source = path.relative_to(base_directory).as_posix()
     extension = path.suffix.lower()
     if extension == ".pdf":
-        return _load_pdf(path, source)
-    if extension == ".docx":
-        return _load_docx(path, source)
-    if extension == ".txt":
-        return _load_txt(path, source)
-    return []
+        yield from _load_pdf(path, source)
+    elif extension == ".docx":
+        yield from _load_docx(path, source)
+    elif extension == ".txt":
+        yield from _load_txt(path, source)
 
 
-def _load_pdf(path: Path, source: str) -> list[DocumentSection]:
+def _load_pdf(path: Path, source: str) -> Iterator[DocumentSection]:
     if pymupdf is not None:
-        sections = []
         with pymupdf.open(path) as document:
             for number, page in enumerate(document, start=1):
                 text = page.get_text("text").strip()
                 if text:
-                    sections.append(DocumentSection(source, f"página {number}", text))
-        return sections
+                    yield DocumentSection(source, f"página {number}", text)
+        return
 
     reader = PdfReader(str(path))
-    sections = []
     for number, page in enumerate(reader.pages, start=1):
         text = (page.extract_text() or "").strip()
         if text:
-            sections.append(DocumentSection(source, f"página {number}", text))
-    return sections
+            yield DocumentSection(source, f"página {number}", text)
 
 
-def _load_docx(path: Path, source: str) -> list[DocumentSection]:
+def _load_docx(path: Path, source: str) -> Iterator[DocumentSection]:
     document = Document(str(path))
     paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
     text = "\n".join(paragraphs)
-    return [DocumentSection(source, "documento", text)] if text else []
+    if text:
+        yield DocumentSection(source, "documento", text)
 
 
-def _load_txt(path: Path, source: str) -> list[DocumentSection]:
+def _load_txt(path: Path, source: str) -> Iterator[DocumentSection]:
     raw = path.read_bytes()
     for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
             text = raw.decode(encoding).strip()
-            return [DocumentSection(source, "documento", text)] if text else []
+            if text:
+                yield DocumentSection(source, "documento", text)
+            return
         except UnicodeDecodeError:
             continue
-    return []
