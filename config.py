@@ -10,6 +10,7 @@ load_dotenv(BASE_DIR / ".env")
 
 class Settings:
     APP_NAME = "MAGISTERIA"
+    APP_PASSWORD = os.getenv("APP_PASSWORD", "DIVINA")
     DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", str(BASE_DIR / "Documentos"))).expanduser()
     VECTOR_DIR = Path(os.getenv("VECTOR_DIR", str(BASE_DIR / "banco_vetorial"))).expanduser()
     INDEX_FILE = VECTOR_DIR / "indice.json"

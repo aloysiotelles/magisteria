@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
+import hmac
+import html
 import time
 import json
 import logging
+from pathlib import Path
+from urllib.parse import parse_qs, unquote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -99,6 +104,91 @@ app = FastAPI(
     version=APP_VERSION,
     lifespan=lifespan,
 )
+
+AUTH_COOKIE = "magisteria_access"
+PUBLIC_PATHS = {"/health", "/login"}
+
+
+def access_token() -> str:
+    return hmac.new(
+        settings.APP_PASSWORD.encode("utf-8"),
+        b"magisteria-access",
+        hashlib.sha256,
+    ).hexdigest()
+
+
+@app.middleware("http")
+async def password_protection(request: Request, call_next):
+    if request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+    supplied = request.cookies.get(AUTH_COOKIE, "")
+    if hmac.compare_digest(supplied, access_token()):
+        return await call_next(request)
+    if request.method == "GET":
+        return RedirectResponse(url="/login", status_code=303)
+    return JSONResponse({"detail": "Autenticacao necessaria."}, status_code=401)
+
+
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+async def login_page(erro: str = ""):
+    warning = '<p class="erro">Senha incorreta.</p>' if erro else ""
+    return HTMLResponse(f"""<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Entrar no MAGISTERIA</title><style>
+body{{font-family:system-ui;background:#f3efe7;display:grid;place-items:center;min-height:100vh;margin:0;color:#251d16}}
+form{{background:white;padding:2rem;border-radius:18px;box-shadow:0 12px 40px #0002;width:min(360px,80vw)}}
+input,button{{box-sizing:border-box;width:100%;padding:.9rem;margin-top:.8rem;border-radius:10px;font-size:1rem}}
+input{{border:1px solid #9a8c7b}}button{{border:0;background:#6d2d2d;color:white;font-weight:700;cursor:pointer}}
+.erro{{color:#a11}}h1{{margin:.2rem 0}}
+</style></head><body><form method="post" action="/login"><h1>MAGISTERIA</h1>
+<p>Informe a senha para acessar.</p>{warning}<input type="password" name="senha" required autofocus>
+<button type="submit">Entrar</button></form></body></html>""")
+
+
+@app.post("/login", include_in_schema=False)
+async def login(request: Request):
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    password = fields.get("senha", [""])[0]
+    if not hmac.compare_digest(password, settings.APP_PASSWORD):
+        return RedirectResponse(url="/login?erro=1", status_code=303)
+    response = RedirectResponse(url="/", status_code=303)
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    response.set_cookie(
+        AUTH_COOKIE,
+        access_token(),
+        max_age=60 * 60 * 24 * 30,
+        httponly=True,
+        secure=forwarded_proto == "https",
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/admin/upload-chunk", include_in_schema=False)
+async def upload_document_chunk(request: Request):
+    filename = Path(unquote(request.headers.get("x-filename", ""))).name
+    if not filename or Path(filename).suffix.lower() not in {".pdf", ".docx", ".txt"}:
+        raise HTTPException(status_code=400, detail="Nome ou formato de arquivo invalido.")
+    try:
+        offset = int(request.headers.get("x-offset", "0"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Offset invalido.") from exc
+    uploads_dir = settings.DOCUMENTS_DIR / ".uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    partial = uploads_dir / f"{filename}.part"
+    if offset == 0 and partial.exists():
+        partial.unlink()
+    current_size = partial.stat().st_size if partial.exists() else 0
+    if current_size != offset:
+        raise HTTPException(status_code=409, detail={"offset_esperado": current_size})
+    chunk = await request.body()
+    with partial.open("ab") as output:
+        output.write(chunk)
+    if request.headers.get("x-complete") == "1":
+        destination = settings.DOCUMENTS_DIR / filename
+        partial.replace(destination)
+        return {"arquivo": filename, "concluido": True, "bytes": destination.stat().st_size}
+    return {"arquivo": filename, "concluido": False, "bytes": current_size + len(chunk)}
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 

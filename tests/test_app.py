@@ -15,6 +15,13 @@ from services.document_loader import load_document
 from services.presentation_service import PresentationService, safe_filename
 
 
+def authenticated_client() -> TestClient:
+    client = TestClient(application.app)
+    response = client.post("/login", data={"senha": "DIVINA"})
+    assert response.status_code == 200
+    return client
+
+
 def test_vector_store_indexes_and_finds_txt(tmp_path: Path):
     documents = tmp_path / "Documentos"
     documents.mkdir()
@@ -193,7 +200,7 @@ def test_source_references_use_document_specific_locators():
 
 
 def test_routes_and_closed_base_behavior(monkeypatch):
-    client = TestClient(application.app)
+    client = authenticated_client()
     monkeypatch.setattr(application.vector_store, "search_ordered", lambda *args, **kwargs: [])
 
     assert client.get("/").status_code == 200
@@ -218,7 +225,7 @@ def test_routes_and_closed_base_behavior(monkeypatch):
 
 
 def test_question_validation():
-    client = TestClient(application.app)
+    client = authenticated_client()
     assert client.post("/perguntar", json={"pergunta": "x"}).status_code == 422
 
 
@@ -233,7 +240,7 @@ def test_startup_reindexes_documents(monkeypatch):
 
 
 def test_script_and_slides_routes(monkeypatch):
-    client = TestClient(application.app)
+    client = authenticated_client()
     topics = [{"titulo": "Esperança", "sintese": "Síntese pastoral.", "pontos": ["Primeiro ponto", "Segundo ponto"]}]
 
     async def outline(*args):
@@ -322,3 +329,13 @@ def test_cover_and_closing_images_are_not_hidden_by_black_shapes():
     for slide in (prs.slides[-2], prs.slides[-1]):
         assert slide.shapes[0].shape_type == MSO_SHAPE_TYPE.PICTURE
         assert all(shape.shape_type in {MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.TEXT_BOX} for shape in slide.shapes)
+
+
+def test_password_protects_application_and_health_is_public():
+    client = TestClient(application.app)
+    assert client.get("/health").status_code == 200
+    assert client.get("/", follow_redirects=False).headers["location"] == "/login"
+    wrong = client.post("/login", data={"senha": "incorreta"}, follow_redirects=False)
+    assert wrong.headers["location"] == "/login?erro=1"
+    assert client.post("/login", data={"senha": "DIVINA"}).status_code == 200
+    assert client.get("/").status_code == 200
