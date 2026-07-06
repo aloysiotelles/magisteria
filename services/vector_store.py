@@ -63,7 +63,7 @@ class Chunk:
     source: str
     location: str
     text: str
-    vector: dict[str, float]
+    vector: list[int | float]
 
 
 class LocalVectorStore:
@@ -78,7 +78,7 @@ class LocalVectorStore:
         self._rebuild_runtime_cache()
 
     def _empty_index(self) -> dict:
-        return {"version": 2, "updated_at": None, "documents": [], "files": {}, "chunks": [], "errors": []}
+        return {"version": 3, "updated_at": None, "documents": [], "files": {}, "chunks": [], "errors": []}
 
     def _load_index(self) -> dict:
         if not self.index_file.exists():
@@ -140,8 +140,10 @@ class LocalVectorStore:
         documents = discover_documents(self.documents_dir)
         errors: list[dict[str, str]] = []
         previous_files = self.data.get("files", {})
+        if self.data.get("version") != 3:
+            previous_files = {}
         document_names = [path.relative_to(self.documents_dir).as_posix() for path in documents]
-        changed = self.data.get("version") != 2 or set(previous_files) != set(document_names)
+        changed = self.data.get("version") != 3 or set(previous_files) != set(document_names)
         previous_chunks: dict[str, list[dict]] = {}
         for chunk in self.data.get("chunks", []):
             previous_chunks.setdefault(chunk.get("source", ""), []).append(chunk)
@@ -178,7 +180,7 @@ class LocalVectorStore:
                                 source=section.source,
                                 location=section.location,
                                 text=text,
-                                vector=self._vectorize(text),
+                                vector=self._compact_vector(text),
                             ))
                         )
                 current_files[source] = fingerprint
@@ -190,7 +192,7 @@ class LocalVectorStore:
 
         updated_at = datetime.now(timezone.utc).isoformat()
         self.data = {
-            "version": 2,
+            "version": 3,
             "updated_at": updated_at,
             "documents": document_names,
             "files": current_files,
@@ -222,7 +224,7 @@ class LocalVectorStore:
             token for token in TOKEN_PATTERN.findall(normalized_query)
             if token not in QUERY_STOPWORDS and len(token) > 2
         }
-        query_term_slots = {self._feature_slot(term) for term in query_terms}
+        query_term_slots = {int(self._feature_slot(term)) for term in query_terms}
         preferred_sources = source_filter or self._preferred_sources(normalized_query)
         if preferred_sources:
             source_hint_terms = {
@@ -239,7 +241,7 @@ class LocalVectorStore:
 
             vector_score = self._cosine(query_vector, chunk.get("vector", {}))
             chunk_slots = chunk.get("vector", {})
-            coverage = sum(slot in chunk_slots for slot in query_term_slots) / max(len(query_term_slots), 1)
+            coverage = self._coverage(chunk_slots, query_term_slots) / max(len(query_term_slots), 1)
             relevance = (vector_score * 0.68) + (coverage * 0.32)
             source_bonus = 0.18 if preferred_sources else self._source_name_bonus(query_terms, source_normalized)
             score = relevance + source_bonus
@@ -259,13 +261,13 @@ class LocalVectorStore:
             token for token in TOKEN_PATTERN.findall(normalized_query)
             if token not in QUERY_STOPWORDS and len(token) > 2
         }
-        query_term_slots = {self._feature_slot(term) for term in query_terms}
+        query_term_slots = {int(self._feature_slot(term)) for term in query_terms}
         source_rules = self._source_rules
         buckets: list[list[dict]] = [[] for _ in range(len(source_rules) + 1)]
         bible_query_terms = set(query_terms)
         for term in query_terms:
             bible_query_terms.update(BIBLE_QUERY_EXPANSIONS.get(term, set()))
-        bible_term_slots = {self._feature_slot(term) for term in bible_query_terms}
+        bible_term_slots = {int(self._feature_slot(term)) for term in bible_query_terms}
 
         for chunk in self.data.get("chunks", []):
             source = chunk.get("source", "")
@@ -274,9 +276,9 @@ class LocalVectorStore:
 
             vector_score = self._cosine(query_vector, chunk.get("vector", {}))
             chunk_slots = chunk.get("vector", {})
-            coverage = sum(slot in chunk_slots for slot in query_term_slots) / max(len(query_term_slots), 1)
+            coverage = self._coverage(chunk_slots, query_term_slots) / max(len(query_term_slots), 1)
             if bucket_index == 4:
-                coverage = sum(slot in chunk_slots for slot in bible_term_slots) / max(len(query_terms), 1)
+                coverage = self._coverage(chunk_slots, bible_term_slots) / max(len(query_terms), 1)
             relevance = (vector_score * 0.68) + (coverage * 0.32)
             if relevance < minimum_score:
                 continue
@@ -481,13 +483,34 @@ class LocalVectorStore:
         norm = math.sqrt(sum(value * value for value in counts.values())) or 1.0
         return {slot: value / norm for slot, value in counts.items()}
 
+    @classmethod
+    def _compact_vector(cls, text: str) -> list[int | float]:
+        """Representacao alternada slot/peso, muito menor que milhares de dicts."""
+        vector = cls._vectorize(text)
+        compact: list[int | float] = []
+        for slot, value in vector.items():
+            compact.extend((int(slot), round(value, 6)))
+        return compact
+
+    @staticmethod
+    def _coverage(vector: dict[str, float] | list, slots: set[int]) -> int:
+        if isinstance(vector, dict):
+            return sum(str(slot) in vector for slot in slots)
+        present = {int(vector[index]) for index in range(0, len(vector), 2)}
+        return len(present & slots)
+
     @staticmethod
     def _feature_slot(feature: str) -> str:
         slot = int(hashlib.blake2b(feature.encode("utf-8"), digest_size=4).hexdigest(), 16) % VECTOR_SIZE
         return str(slot)
 
     @staticmethod
-    def _cosine(left: dict[str, float], right: dict[str, float]) -> float:
+    def _cosine(left: dict[str, float], right: dict[str, float] | list) -> float:
+        if isinstance(right, list):
+            return sum(
+                float(right[index + 1]) * left.get(str(int(right[index])), 0.0)
+                for index in range(0, len(right), 2)
+            )
         if len(left) > len(right):
             left, right = right, left
         return sum(value * right.get(slot, 0.0) for slot, value in left.items())
