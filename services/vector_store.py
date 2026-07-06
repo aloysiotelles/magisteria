@@ -1,36 +1,26 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, dataclass
+from collections.abc import Callable
 from datetime import datetime, timezone
 import hashlib
 import json
-import math
-from pathlib import Path
 import re
+import sqlite3
+from pathlib import Path
 import unicodedata
-import heapq
-import logging
-from collections.abc import Callable
 
 from services.document_loader import discover_documents, load_document
 
 
-logger = logging.getLogger(__name__)
-
-
 TOKEN_PATTERN = re.compile(r"[a-z0-9à-ÿ]{2,}", re.IGNORECASE)
-VECTOR_SIZE = 1536
 QUERY_STOPWORDS = {
     "que", "como", "qual", "quais", "uma", "uns", "das", "dos", "para", "por", "com",
     "sem", "sobre", "segundo", "partir", "ensina", "ensinam", "igreja", "documento", "documentos",
 }
 SOURCE_HINTS = {
-    "catecismo": ("catecismo",),
-    "biblia": ("biblia",),
-    "missal": ("missal",),
-    "suma": ("suma teologica",),
-    "doutrina social": ("doutrina social",),
+    "catecismo": ("catecismo",), "biblia": ("biblia",), "missal": ("missal",),
+    "suma": ("suma teologica",), "doutrina social": ("doutrina social",),
     "d sistema": ("simbolos definicoes",),
 }
 ORDERED_SOURCES = (
@@ -42,379 +32,191 @@ ORDERED_SOURCES = (
     ("Compêndio Vaticano II", ("compendio vaticano ii", "vaticano ii"), 3),
 )
 BIBLE_QUERY_EXPANSIONS = {
-    "caridade": {"amor", "amar", "amou"},
-    "sacramento": {"batismo", "eucaristia", "ceia"},
-    "sacramentos": {"batismo", "eucaristia", "ceia"},
-    "perdao": {"perdoar", "misericordia"},
+    "caridade": {"amor", "amar", "amou"}, "sacramento": {"batismo", "eucaristia", "ceia"},
+    "sacramentos": {"batismo", "eucaristia", "ceia"}, "perdao": {"perdoar", "misericordia"},
     "esperanca": {"esperar", "ressurreicao"},
 }
 BIBLE_REFERENCE_PATTERN = re.compile(
     r"\b(?:Gn|Ex|Êx|Lv|Nm|Dt|Js|Jz|Rt|1Sm|2Sm|1Rs|2Rs|1Cr|2Cr|Esd|Ne|Tb|Jt|Est|"
     r"1Mc|2Mc|Jó|Sl|Pr|Ecl|Ct|Sb|Eclo|Is|Jr|Lm|Br|Ez|Dn|Os|Jl|Am|Ab|Jn|Mq|Na|Hab|"
     r"Sf|Ag|Zc|Ml|Mt|Mc|Lc|Jo|At|Rm|1Cor|2Cor|Gl|Ef|Fl|Cl|1Ts|2Ts|1Tm|2Tm|Tt|Fm|"
-    r"Hb|Tg|1Pd|2Pd|1Jo|2Jo|3Jo|Jd|Ap)[ \t]*\d{1,3}[ \t]*,[ \t]*\d{1,3}(?:[-–.]\d{1,3})*",
+    r"Hb|Tg|1Pd|2Pd|1Jo|2Jo|3Jo|Jd|Ap)\s*\d{1,3}\s*,\s*\d{1,3}(?:[-–.]\d{1,3})*",
     re.IGNORECASE,
 )
 
 
-@dataclass
-class Chunk:
-    id: str
-    source: str
-    location: str
-    text: str
-    vector: list[int | float]
-
-
 class LocalVectorStore:
-    """Índice vetorial local, determinístico e sem downloads externos."""
+    """Indice SQLite/FTS em disco, adequado a bases grandes e pouca memoria."""
 
     def __init__(self, documents_dir: Path, index_file: Path, chunk_size: int, overlap: int):
         self.documents_dir = documents_dir
         self.index_file = index_file
         self.chunk_size = chunk_size
         self.overlap = overlap
-        self.data = self._load_index()
-        self._rebuild_runtime_cache()
+        self.index_file.parent.mkdir(parents=True, exist_ok=True)
+        self._prepare_database_file()
+        self._initialize()
 
-    def _empty_index(self) -> dict:
-        return {"version": 3, "updated_at": None, "documents": [], "files": {}, "chunks": [], "errors": []}
-
-    def _load_index(self) -> dict:
+    def _prepare_database_file(self) -> None:
         if not self.index_file.exists():
-            return self._empty_index()
+            return
         try:
-            return json.loads(self.index_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.exception("Não foi possível carregar o índice local: %s", exc)
-            return self._empty_index()
+            if self.index_file.read_bytes()[:16] == b"SQLite format 3\x00":
+                return
+        except OSError:
+            pass
+        legacy = self.index_file.with_suffix(self.index_file.suffix + ".legacy-json")
+        legacy.unlink(missing_ok=True)
+        self.index_file.replace(legacy)
 
-    def _rebuild_runtime_cache(self) -> None:
-        """Prepara metadados pequenos usados em todas as consultas."""
-        sources = {chunk.get("source", "") for chunk in self.data.get("chunks", [])}
-        self._normalized_sources = {source: self._normalize(source) for source in sources}
-        self._source_rules = [
-            (label, tuple(self._normalize(hint) for hint in hints), quota)
-            for label, hints, quota in ORDERED_SOURCES
-        ]
-        self._source_buckets = {}
-        for source, normalized in self._normalized_sources.items():
-            bucket = len(self._source_rules)
-            for index, (_, hints, _) in enumerate(self._source_rules):
-                if any(hint in normalized for hint in hints):
-                    bucket = index
-                    break
-            self._source_buckets[source] = bucket
-        self._vatican_sections = self._load_vatican_sections()
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.index_file, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
+        return connection
 
-    def _load_vatican_sections(self) -> list[tuple[int, str]]:
-        """Relaciona páginas do compêndio aos documentos conciliares internos."""
-        try:
-            import pymupdf
+    def _initialize(self) -> None:
+        with self._connect() as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS files (
+                    source TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
+                    id UNINDEXED, source UNINDEXED, location UNINDEXED, text,
+                    tokenize='unicode61 remove_diacritics 2'
+                );
+                CREATE TABLE IF NOT EXISTS errors (source TEXT, error TEXT);
+            """)
 
-            path = next(
-                path for path in self.documents_dir.rglob("*.pdf")
-                if "compendio vaticano ii" in self._normalize(path.name)
-            )
-            with pymupdf.open(path) as document:
-                return [
-                    (page, self._format_conciliar_title(title))
-                    for level, title, page in document.get_toc(simple=True)
-                    if level == 1 and title.strip()
-                ]
-        except (ImportError, OSError, StopIteration, ValueError):
-            return []
-
-    @staticmethod
-    def _format_conciliar_title(title: str) -> str:
-        words = title.strip().title().split()
-        return " ".join(
-            word.lower() if index and word.lower() in {"a", "da", "de", "do", "e", "em"} else word
-            for index, word in enumerate(words)
-        )
-
-    def index_documents(
-        self, progress_callback: Callable[[int, int, str], None] | None = None
-    ) -> dict:
-        chunks: list[dict] = []
+    def index_documents(self, progress_callback: Callable[[int, int, str], None] | None = None) -> dict:
         documents = discover_documents(self.documents_dir)
-        errors: list[dict[str, str]] = []
-        previous_files = self.data.get("files", {})
-        if self.data.get("version") != 3:
-            previous_files = {}
-        document_names = [path.relative_to(self.documents_dir).as_posix() for path in documents]
-        changed = self.data.get("version") != 3 or set(previous_files) != set(document_names)
-        previous_chunks: dict[str, list[dict]] = {}
-        for chunk in self.data.get("chunks", []):
-            previous_chunks.setdefault(chunk.get("source", ""), []).append(chunk)
-        current_files: dict[str, dict[str, int]] = {}
-
+        names = [path.relative_to(self.documents_dir).as_posix() for path in documents]
         if progress_callback:
             progress_callback(0, len(documents), "Preparando documentos")
-
-        for position, path in enumerate(documents, start=1):
-            source = path.relative_to(self.documents_dir).as_posix()
-            stat = path.stat()
-            fingerprint = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
-
-            if previous_files.get(source) == fingerprint:
-                chunks.extend(previous_chunks.get(source, []))
-                current_files[source] = fingerprint
+        with self._connect() as db:
+            known = {row["source"]: (row["size"], row["mtime_ns"]) for row in db.execute("SELECT * FROM files")}
+            for removed in set(known) - set(names):
+                db.execute("DELETE FROM chunks WHERE source = ?", (removed,))
+                db.execute("DELETE FROM files WHERE source = ?", (removed,))
+            for position, path in enumerate(documents, 1):
+                source = path.relative_to(self.documents_dir).as_posix()
+                stat = path.stat()
+                fingerprint = (stat.st_size, stat.st_mtime_ns)
+                if known.get(source) == fingerprint:
+                    if progress_callback:
+                        progress_callback(position, len(documents), f"Reutilizado: {path.name}")
+                    continue
                 if progress_callback:
-                    progress_callback(position, len(documents), f"Reutilizado: {path.name}")
-                continue
-
-            changed = True
-
-            if progress_callback:
-                progress_callback(position - 1, len(documents), f"Lendo {position} de {len(documents)}: {path.name}")
-            try:
-                for section in load_document(path, self.documents_dir):
-                    for number, text in enumerate(self._split_text(section.text), start=1):
-                        chunk_id = hashlib.sha256(
-                            f"{section.source}|{section.location}|{number}|{text}".encode("utf-8")
-                        ).hexdigest()[:20]
-                        chunks.append(
-                            asdict(Chunk(
-                                id=chunk_id,
-                                source=section.source,
-                                location=section.location,
-                                text=text,
-                                vector=self._compact_vector(text),
-                            ))
-                        )
-                current_files[source] = fingerprint
-            except Exception as exc:  # Um arquivo inválido não impede a indexação dos demais.
-                errors.append({"arquivo": path.name, "erro": str(exc)})
-            finally:
+                    progress_callback(position - 1, len(documents), f"Lendo {position} de {len(documents)}: {path.name}")
+                db.execute("DELETE FROM chunks WHERE source = ?", (source,))
+                db.execute("DELETE FROM errors WHERE source = ?", (source,))
+                try:
+                    rows = []
+                    for section in load_document(path, self.documents_dir):
+                        for number, text in enumerate(self._split_text(section.text), 1):
+                            chunk_id = hashlib.sha256(f"{source}|{section.location}|{number}|{text}".encode()).hexdigest()[:20]
+                            rows.append((chunk_id, source, section.location, text))
+                            if len(rows) >= 100:
+                                db.executemany("INSERT INTO chunks(id,source,location,text) VALUES(?,?,?,?)", rows)
+                                rows.clear()
+                    if rows:
+                        db.executemany("INSERT INTO chunks(id,source,location,text) VALUES(?,?,?,?)", rows)
+                    db.execute(
+                        "INSERT OR REPLACE INTO files(source,size,mtime_ns) VALUES(?,?,?)",
+                        (source, *fingerprint),
+                    )
+                except Exception as exc:
+                    db.execute("INSERT INTO errors(source,error) VALUES(?,?)", (source, str(exc)))
+                db.commit()
                 if progress_callback:
                     progress_callback(position, len(documents), path.name)
-
-        updated_at = datetime.now(timezone.utc).isoformat()
-        self.data = {
-            "version": 3,
-            "updated_at": updated_at,
-            "documents": document_names,
-            "files": current_files,
-            "chunks": chunks,
-            "errors": errors,
-        }
-        self._rebuild_runtime_cache()
-        if not changed and not errors:
-            return self.status()
-        self.index_file.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.index_file.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(self.index_file)
+            updated = datetime.now(timezone.utc).isoformat()
+            db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
         return self.status()
 
-    def search(
-        self,
-        query: str,
-        limit: int = 6,
-        minimum_score: float = 0.08,
-        source_filter: tuple[str, ...] | None = None,
-        excluded_sources: tuple[str, ...] = (),
-    ) -> list[dict]:
-        query_vector = self._vectorize(query)
-        if not query_vector:
+    def _candidate_rows(self, query: str, limit: int = 300) -> list[dict]:
+        terms = [term for term in TOKEN_PATTERN.findall(self._normalize(query)) if term not in QUERY_STOPWORDS and len(term) > 2]
+        expanded = set(terms)
+        for term in terms:
+            expanded.update(BIBLE_QUERY_EXPANSIONS.get(term, set()))
+        if not expanded:
             return []
-        normalized_query = self._normalize(query)
-        query_terms = {
-            token for token in TOKEN_PATTERN.findall(normalized_query)
-            if token not in QUERY_STOPWORDS and len(token) > 2
-        }
-        query_term_slots = {int(self._feature_slot(term)) for term in query_terms}
-        preferred_sources = source_filter or self._preferred_sources(normalized_query)
-        if preferred_sources:
-            source_hint_terms = {
-                token for hint in preferred_sources for token in TOKEN_PATTERN.findall(hint)
-            }
-            query_terms -= source_hint_terms
-        ranked = []
-        for chunk in self.data.get("chunks", []):
-            source_normalized = self._normalize(chunk.get("source", ""))
-            if preferred_sources and not any(hint in source_normalized for hint in preferred_sources):
-                continue
-            if excluded_sources and any(hint in source_normalized for hint in excluded_sources):
-                continue
+        expression = " OR ".join(f'"{term}"' for term in sorted(expanded))
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT id,source,location,text,bm25(chunks) rank FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
+                (expression, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
-            vector_score = self._cosine(query_vector, chunk.get("vector", {}))
-            chunk_slots = chunk.get("vector", {})
-            coverage = self._coverage(chunk_slots, query_term_slots) / max(len(query_term_slots), 1)
-            relevance = (vector_score * 0.68) + (coverage * 0.32)
-            source_bonus = 0.18 if preferred_sources else self._source_name_bonus(query_terms, source_normalized)
-            score = relevance + source_bonus
-            if relevance >= minimum_score:
-                ranked.append({**chunk, "score": round(score, 4)})
+    def search(self, query: str, limit: int = 6, minimum_score: float = 0.08,
+               source_filter: tuple[str, ...] | None = None, excluded_sources: tuple[str, ...] = ()) -> list[dict]:
+        normalized_query = self._normalize(query)
+        terms = {t for t in TOKEN_PATTERN.findall(normalized_query) if t not in QUERY_STOPWORDS and len(t) > 2}
+        preferred = source_filter or self._preferred_sources(normalized_query)
+        if preferred:
+            terms -= {t for hint in preferred for t in TOKEN_PATTERN.findall(hint)}
+        ranked = []
+        for row in self._candidate_rows(query):
+            source_norm = self._normalize(row["source"])
+            if preferred and not any(hint in source_norm for hint in preferred):
+                continue
+            if excluded_sources and any(hint in source_norm for hint in excluded_sources):
+                continue
+            text_terms = set(TOKEN_PATTERN.findall(self._normalize(row["text"])))
+            coverage = len(terms & text_terms) / max(len(terms), 1)
+            if coverage < minimum_score:
+                continue
+            ranked.append({**row, "score": round(coverage + (0.18 if preferred else 0), 4)})
         ranked.sort(key=lambda item: item["score"], reverse=True)
-        return self._diversify(ranked, limit, bool(preferred_sources))
+        return self._diversify(ranked, limit, bool(preferred))
 
     def search_ordered(self, query: str, limit: int = 14, minimum_score: float = 0.08) -> list[dict]:
-        """Consulta todas as coleções em uma varredura e monta a ordem editorial."""
-        query_vector = self._vectorize(query)
-        if not query_vector:
-            return []
-
-        normalized_query = self._normalize(query)
-        query_terms = {
-            token for token in TOKEN_PATTERN.findall(normalized_query)
-            if token not in QUERY_STOPWORDS and len(token) > 2
-        }
-        query_term_slots = {int(self._feature_slot(term)) for term in query_terms}
-        source_rules = self._source_rules
-        buckets: list[list[dict]] = [[] for _ in range(len(source_rules) + 1)]
-        bible_query_terms = set(query_terms)
-        for term in query_terms:
-            bible_query_terms.update(BIBLE_QUERY_EXPANSIONS.get(term, set()))
-        bible_term_slots = {int(self._feature_slot(term)) for term in bible_query_terms}
-
-        for chunk in self.data.get("chunks", []):
-            source = chunk.get("source", "")
-            source_normalized = self._normalized_sources.get(source, "")
-            bucket_index = self._source_buckets.get(source, len(source_rules))
-
-            vector_score = self._cosine(query_vector, chunk.get("vector", {}))
-            chunk_slots = chunk.get("vector", {})
-            coverage = self._coverage(chunk_slots, query_term_slots) / max(len(query_term_slots), 1)
-            if bucket_index == 4:
-                coverage = self._coverage(chunk_slots, bible_term_slots) / max(len(query_terms), 1)
-            relevance = (vector_score * 0.68) + (coverage * 0.32)
-            if relevance < minimum_score:
-                continue
-            source_bonus = 0.18 if bucket_index < len(source_rules) else self._source_name_bonus(
-                query_terms, source_normalized
-            )
-            score = relevance + source_bonus
-            if bucket_index == 4:
-                verse_markers = len(re.findall(r"(?:^|\n)\s*\d{1,3}\s+", chunk.get("text", "")))
-                if verse_markers >= 2 and coverage > 0:
-                    score += 0.2
-                if any(
-                    marker in chunk.get("text", "").lower()
-                    for marker in ("introdução", "características", "interpretação", "plano da obra")
-                ):
-                    score -= 0.1
-            buckets[bucket_index].append({**chunk, "score": round(score, 4)})
-
-        bucket_limits = [quota for _, _, quota in source_rules] + [limit]
-        buckets = [
-            heapq.nlargest(bucket_limits[index], bucket, key=lambda item: item["score"])
-            for index, bucket in enumerate(buckets)
-        ]
-
-        selected: list[dict] = []
-        for order, ((label, _, quota), bucket) in enumerate(zip(source_rules, buckets), start=1):
-            selected.extend(
-                {**result, "ordem": order, "categoria": label}
-                for result in bucket[:quota]
-            )
-
+        candidates = self.search(query, limit=300, minimum_score=minimum_score)
+        buckets = [[] for _ in range(len(ORDERED_SOURCES) + 1)]
+        for item in candidates:
+            normalized = self._normalize(item["source"])
+            bucket = len(ORDERED_SOURCES)
+            for index, (_, hints, _) in enumerate(ORDERED_SOURCES):
+                if any(self._normalize(hint) in normalized for hint in hints):
+                    bucket = index
+                    break
+            buckets[bucket].append(item)
+        selected = []
+        for order, ((label, _, quota), bucket) in enumerate(zip(ORDERED_SOURCES, buckets), 1):
+            selected.extend({**item, "ordem": order, "categoria": label} for item in bucket[:quota])
         remaining = max(limit - len(selected), 0)
         selected.extend(
-            {**result, "ordem": len(source_rules) + 1, "categoria": "Demais documentos"}
-            for result in buckets[-1][:remaining]
+            {**item, "ordem": len(ORDERED_SOURCES) + 1, "categoria": "Demais documentos"}
+            for item in buckets[-1][:remaining]
         )
-        selected = self._enrich_bible_locations(selected[:limit])
-        return self._enrich_reference_metadata(selected)
+        return self._enrich_references(selected[:limit])
 
-    def _enrich_reference_metadata(self, results: list[dict]) -> list[dict]:
-        selected_pages = {
-            (item["source"], match.group())
-            for item in results
-            if (match := re.search(r"\d+", item.get("location", "")))
-        }
-        page_texts: dict[tuple[str, str], list[str]] = {key: [] for key in selected_pages}
-        for chunk in self.data.get("chunks", []):
-            page_number_match = re.search(r"\d+", chunk.get("location", ""))
-            if not page_number_match:
-                continue
-            key = (chunk.get("source", ""), page_number_match.group())
-            if key in page_texts:
-                page_texts[key].append(chunk.get("text", ""))
-
+    def _enrich_references(self, results: list[dict]) -> list[dict]:
         for item in results:
-            source_normalized = self._normalize(item["source"])
-            page_match = re.search(r"\d+", item.get("location", ""))
-            key = (item["source"], page_match.group()) if page_match else None
-            page_text = "\n".join(page_texts.get(key, [])) or item.get("text", "")
-            references: list[str] = []
-
-            if "catecismo" in source_normalized:
-                references = re.findall(r"(?:^|\n)\s*(\d{1,4})\.\s", page_text)
-            elif "simbolos" in source_normalized:
-                range_match = re.search(r"\*(\d{3,4})\s*[-–]\s*(\d{3,4})", page_text)
-                if range_match:
-                    references = [f"{range_match.group(1)}–{range_match.group(2)}"]
-                else:
-                    references = re.findall(r"\*(\d{3,4})", page_text)
-            elif "doutrina-social" in source_normalized or "doutrina social" in source_normalized:
-                references = re.findall(r"(?:^|\n)\s*(\d{1,3})\s+(?=[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ])", page_text)
-            elif "compendio vaticano ii" in source_normalized or "vaticano ii" in source_normalized:
-                paragraph_numbers = re.findall(
-                    r"(?:^|\n|\s)(\d{1,3})\.\s+(?=[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ«])",
-                    item.get("text", ""),
-                )
-                if not paragraph_numbers:
-                    paragraph_numbers = re.findall(
-                        r"(?:^|\n)(\d{1,3})\.\s+(?=[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ«])",
-                        page_text,
-                    )[:1]
-                page_number = int(page_match.group()) if page_match else 0
-                eligible = [section for section in self._vatican_sections if section[0] <= page_number]
-                internal_document = eligible[-1][1] if eligible else "Concílio Vaticano II"
-                references = [
-                    f"{internal_document}, n. {number}"
-                    for number in dict.fromkeys(paragraph_numbers)
-                ]
-            elif "biblia" in source_normalized:
-                references = []
-                for match in BIBLE_REFERENCE_PATTERN.finditer(page_text):
-                    reference = re.sub(r"([A-Za-zÀ-ÿ])(?=\d)", r"\1 ", match.group(0), count=1)
-                    reference = re.sub(r"[ \t]*,[ \t]*", ",", reference)
-                    references.append(reference)
-
-            item["referencias"] = list(dict.fromkeys(references))[:12]
-        return results
-
-    def _enrich_bible_locations(self, results: list[dict]) -> list[dict]:
-        bible_results = [item for item in results if item.get("ordem") == 5]
-        if not bible_results:
-            return results
-        try:
-            import pymupdf
-
-            bible_path = next(
-                path for path in self.documents_dir.rglob("*.pdf")
-                if "biblia ave maria" in self._normalize(path.name)
-            )
-            with pymupdf.open(bible_path) as document:
-                sections = [
-                    (page, title.lstrip("| ").strip())
-                    for _, title, page in document.get_toc(simple=True)
-                    if title.lstrip().startswith("|")
-                ]
-            for item in bible_results:
-                match = re.search(r"(\d+)", item.get("location", ""))
-                if not match or not sections:
-                    continue
-                page_number = int(match.group(1))
-                _, book = min(sections, key=lambda section: abs(section[0] - page_number))
-                item["location"] = f"{book}, página {page_number}"
-        except (OSError, StopIteration, ValueError):
-            pass
+            normalized = self._normalize(item["source"])
+            text = item.get("text", "")
+            refs = []
+            if "catecismo" in normalized:
+                refs = re.findall(r"(?:^|\n)\s*(\d{1,4})\.\s", text)
+            elif "biblia" in normalized:
+                refs = [re.sub(r"\s*,\s*", ",", match.group()) for match in BIBLE_REFERENCE_PATTERN.finditer(text)]
+            item["referencias"] = list(dict.fromkeys(refs))[:12]
         return results
 
     def status(self) -> dict:
-        return {
-            "documentos": len(self.data.get("documents", [])),
-            "trechos": len(self.data.get("chunks", [])),
-            "ultima_atualizacao": self.data.get("updated_at"),
-            "erros": self.data.get("errors", []),
-        }
+        with self._connect() as db:
+            documents = db.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            chunks = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            updated = db.execute("SELECT value FROM metadata WHERE key='updated_at'").fetchone()
+            errors = [{"arquivo": row["source"], "erro": row["error"]} for row in db.execute("SELECT * FROM errors")]
+        return {"documentos": documents, "trechos": chunks, "ultima_atualizacao": updated[0] if updated else None, "erros": errors}
 
     def document_names(self) -> list[str]:
-        return sorted(self.data.get("documents", []), key=str.casefold)
+        with self._connect() as db:
+            return [row[0] for row in db.execute("SELECT source FROM files ORDER BY source COLLATE NOCASE")]
 
     @classmethod
     def _preferred_sources(cls, normalized_query: str) -> tuple[str, ...]:
@@ -425,22 +227,14 @@ class LocalVectorStore:
         return tuple(matches)
 
     @staticmethod
-    def _source_name_bonus(query_terms: set[str], normalized_source: str) -> float:
-        source_terms = set(TOKEN_PATTERN.findall(normalized_source)) - QUERY_STOPWORDS
-        matches = len(query_terms & source_terms)
-        return min(matches * 0.06, 0.18)
-
-    @staticmethod
-    def _diversify(ranked: list[dict], limit: int, source_is_explicit: bool) -> list[dict]:
-        selected = []
-        per_source: Counter[str] = Counter()
-        per_source_limit = limit if source_is_explicit else max(2, (limit + 1) // 2)
+    def _diversify(ranked: list[dict], limit: int, explicit: bool) -> list[dict]:
+        selected, per_source = [], Counter()
+        source_limit = limit if explicit else max(2, (limit + 1) // 2)
         for item in ranked:
-            source = item["source"]
-            if per_source[source] >= per_source_limit:
+            if per_source[item["source"]] >= source_limit:
                 continue
             selected.append(item)
-            per_source[source] += 1
+            per_source[item["source"]] += 1
             if len(selected) == limit:
                 break
         return selected
@@ -450,9 +244,7 @@ class LocalVectorStore:
         clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
         if len(clean) <= self.chunk_size:
             return [clean] if clean else []
-
-        chunks = []
-        start = 0
+        chunks, start = [], 0
         while start < len(clean):
             end = min(start + self.chunk_size, len(clean))
             if end < len(clean):
@@ -471,46 +263,3 @@ class LocalVectorStore:
     def _normalize(text: str) -> str:
         normalized = unicodedata.normalize("NFKD", text.lower())
         return "".join(character for character in normalized if not unicodedata.combining(character))
-
-    @classmethod
-    def _vectorize(cls, text: str) -> dict[str, float]:
-        tokens = TOKEN_PATTERN.findall(cls._normalize(text))
-        features = tokens + [f"{left}_{right}" for left, right in zip(tokens, tokens[1:])]
-        counts: Counter[str] = Counter()
-        for feature in features:
-            slot = int(cls._feature_slot(feature))
-            counts[str(slot)] += 1
-        norm = math.sqrt(sum(value * value for value in counts.values())) or 1.0
-        return {slot: value / norm for slot, value in counts.items()}
-
-    @classmethod
-    def _compact_vector(cls, text: str) -> list[int | float]:
-        """Representacao alternada slot/peso, muito menor que milhares de dicts."""
-        vector = cls._vectorize(text)
-        compact: list[int | float] = []
-        for slot, value in vector.items():
-            compact.extend((int(slot), round(value, 6)))
-        return compact
-
-    @staticmethod
-    def _coverage(vector: dict[str, float] | list, slots: set[int]) -> int:
-        if isinstance(vector, dict):
-            return sum(str(slot) in vector for slot in slots)
-        present = {int(vector[index]) for index in range(0, len(vector), 2)}
-        return len(present & slots)
-
-    @staticmethod
-    def _feature_slot(feature: str) -> str:
-        slot = int(hashlib.blake2b(feature.encode("utf-8"), digest_size=4).hexdigest(), 16) % VECTOR_SIZE
-        return str(slot)
-
-    @staticmethod
-    def _cosine(left: dict[str, float], right: dict[str, float] | list) -> float:
-        if isinstance(right, list):
-            return sum(
-                float(right[index + 1]) * left.get(str(int(right[index])), 0.0)
-                for index in range(0, len(right), 2)
-            )
-        if len(left) > len(right):
-            left, right = right, left
-        return sum(value * right.get(slot, 0.0) for slot, value in left.items())
