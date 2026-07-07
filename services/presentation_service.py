@@ -117,14 +117,47 @@ class PresentationService:
 
         short_title = short_title or title
         closing_phrase = closing_phrase or "A mensagem acolhida com fé transforma a vida e renova a esperança."
-        visual_brief = self._visual_brief(title, topics, short_title, closing_phrase)
-        images = await self._generate_images(title, visual_brief)
+        cover, closing = await asyncio.gather(
+            self._generate_image_with_retry(
+                title,
+                {
+                    "titulo": short_title,
+                    "sintese": title,
+                    "visual_role": "cover",
+                    "visual_index": 1,
+                    "visual_total": len(topics) + 2,
+                    "visual_signature": self._visual_signature(1),
+                },
+                attempts=2,
+            ),
+            self._generate_image_with_retry(
+                title,
+                {
+                    "titulo": "Encerramento",
+                    "sintese": closing_phrase,
+                    "visual_role": "closing",
+                    "visual_index": len(topics) + 2,
+                    "visual_total": len(topics) + 2,
+                    "visual_signature": self._visual_signature(len(topics) + 2),
+                },
+                attempts=2,
+            ),
+        )
         prs = Presentation()
         prs.slide_width, prs.slide_height = PptInches(13.333), PptInches(7.5)
-        self._add_title_slide(prs, short_title, images[0])
-        for number, (topic, image) in enumerate(zip(topics, images[1:-1]), 1):
+        self._add_title_slide(prs, short_title, cover)
+        for number, topic in enumerate(topics, 1):
+            image = self._fallback_image(
+                {
+                    **topic,
+                    "visual_index": number + 1,
+                    "visual_total": len(topics) + 2,
+                    "visual_signature": self._visual_signature(number + 1),
+                    "title_context": title,
+                }
+            )
             self._add_topic_slide(prs, number, topic, image)
-        self._add_closing_slide(prs, closing_phrase, images[-1])
+        self._add_closing_slide(prs, closing_phrase, closing)
         output = BytesIO()
         prs.save(output)
         return output.getvalue()
@@ -242,6 +275,8 @@ class PresentationService:
     @staticmethod
     def _fallback_image(topic: dict) -> BytesIO:
         index = int(topic.get("visual_index", 1))
+        signature_source = f"{topic.get('titulo', '')}|{topic.get('sintese', '')}|{topic.get('visual_signature', '')}|{topic.get('title_context', '')}"
+        digest = hashlib.sha256(signature_source.encode("utf-8")).digest()
         palettes = [
             ((40, 28, 22), (165, 111, 45), (250, 238, 209)),
             ((19, 45, 37), (92, 134, 95), (238, 226, 190)),
@@ -250,24 +285,28 @@ class PresentationService:
             ((31, 45, 62), (62, 111, 145), (235, 226, 203)),
             ((47, 39, 22), (154, 127, 59), (248, 238, 214)),
         ]
-        dark, mid, light = palettes[(index - 1) % len(palettes)]
+        dark, mid, light = palettes[digest[0] % len(palettes)]
         image = Image.new("RGB", (1024, 1024), dark)
         pixels = image.load()
+        shift_x = 280 + (digest[1] % 180)
+        shift_y = 240 + (digest[2] % 180)
+        radius = 560 + (digest[3] % 160)
         for y in range(1024):
             ratio = y / 1023
             base = tuple(int(dark[channel] * (1 - ratio) + mid[channel] * ratio) for channel in range(3))
             for x in range(1024):
-                glow = max(0, 1 - (((x - 670) ** 2 + (y - 360) ** 2) ** 0.5 / 760))
+                glow = max(0, 1 - (((x - (1024 - shift_x)) ** 2 + (y - shift_y) ** 2) ** 0.5 / radius))
                 pixels[x, y] = tuple(
                     min(255, int(base[channel] * (1 - glow * 0.5) + light[channel] * glow * 0.5))
                     for channel in range(3)
                 )
         draw = ImageDraw.Draw(image, "RGBA")
         for offset in range(0, 1024, 96):
-            alpha = 32 + ((offset + index * 17) % 48)
-            draw.line([(offset - 260, 1024), (offset + 360, 0)], fill=(*light, alpha), width=10)
-        draw.ellipse((650, 160, 930, 440), fill=(*light, 46))
-        draw.ellipse((700, 210, 880, 390), fill=(*light, 54))
+            alpha = 28 + ((offset + digest[4]) % 54)
+            draw.line([(offset - 260, 1024), (offset + 360, 0)], fill=(*light, alpha), width=8 + digest[5] % 5)
+        ellipse_box = (560 + digest[6] % 120, 130 + digest[7] % 120, 890 + digest[1] % 80, 460 + digest[2] % 80)
+        draw.ellipse(ellipse_box, fill=(*light, 46))
+        draw.ellipse((ellipse_box[0] + 40, ellipse_box[1] + 40, ellipse_box[2] - 40, ellipse_box[3] - 40), fill=(*light, 54))
         output = BytesIO()
         image.save(output, "JPEG", quality=86)
         output.seek(0)

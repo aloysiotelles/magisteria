@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from io import BytesIO
 import asyncio
 import time
+import uuid
 
 import pymupdf
 
@@ -18,7 +19,7 @@ from services.presentation_service import PresentationService, safe_filename
 
 def authenticated_client() -> TestClient:
     client = TestClient(application.app)
-    response = client.post("/login", data={"senha": "DIVINA"})
+    response = client.post("/login", data={"email": "Admin", "senha": "3510"})
     assert response.status_code == 200
     return client
 
@@ -362,6 +363,69 @@ def test_duplicate_image_bytes_are_regenerated(monkeypatch):
     assert calls["duplicado"] == 2
 
 
+def test_persistent_image_failure_uses_unique_fallback(monkeypatch):
+    service = PresentationService("", "modelo", image_concurrency=2)
+
+    async def broken_image(*args):
+        raise RuntimeError("serviço indisponível")
+
+    async def no_wait(*args):
+        return None
+
+    monkeypatch.setattr(service, "_generate_image", broken_image)
+    monkeypatch.setattr("services.presentation_service.asyncio.sleep", no_wait)
+    topics = [
+        {"titulo": "falha 1", "visual_index": 1},
+        {"titulo": "falha 2", "visual_index": 2},
+    ]
+
+    images = asyncio.run(service._generate_images("Título", topics))
+
+    assert len(images) == 2
+    assert images[0].getvalue() != images[1].getvalue()
+    assert images[0].getvalue().startswith(b"\xff\xd8")
+
+
+def test_image_request_args_are_compatible_with_model_family():
+    gpt_service = PresentationService("", "modelo", image_model="gpt-image-1", image_quality="low")
+    dalle_service = PresentationService("", "modelo", image_model="dall-e-3", image_quality="low")
+
+    gpt_args = gpt_service._image_request_args("prompt")
+    dalle_args = dalle_service._image_request_args("prompt")
+
+    assert gpt_args["output_format"] == "jpeg"
+    assert "output_compression" not in gpt_args
+    assert dalle_args["response_format"] == "b64_json"
+    assert dalle_args["quality"] == "standard"
+    assert "output_format" not in dalle_args
+
+
+def test_create_pptx_uses_ai_only_for_cover_and_closing(monkeypatch):
+    service = PresentationService("", "modelo", image_concurrency=3)
+    calls = []
+    from PIL import Image
+
+    def make_image_bytes():
+        image = BytesIO()
+        Image.new("RGB", (64, 64), (120, 90, 60)).save(image, "JPEG")
+        image.seek(0)
+        return image
+
+    async def fake_image(title, topic, attempts=2):
+        calls.append(topic["visual_role"])
+        return make_image_bytes()
+
+    monkeypatch.setattr(service, "_generate_image_with_retry", fake_image)
+    topics = [
+        {"titulo": f"Tópico {index}", "sintese": "Síntese.", "pontos": ["Um", "Dois"]}
+        for index in range(10)
+    ]
+    content = asyncio.run(service.create_pptx("Título", topics, "Título curto", "Frase final."))
+
+    assert content.startswith(b"PK")
+    assert calls == ["cover", "closing"]
+
+
 def test_cover_and_closing_images_are_not_hidden_by_black_shapes():
     from io import BytesIO
     from PIL import Image
@@ -385,7 +449,34 @@ def test_password_protects_application_and_health_is_public():
     client = TestClient(application.app)
     assert client.get("/health").status_code == 200
     assert client.get("/", follow_redirects=False).headers["location"] == "/login"
-    wrong = client.post("/login", data={"senha": "incorreta"}, follow_redirects=False)
+    wrong = client.post("/login", data={"email": "Admin", "senha": "incorreta"}, follow_redirects=False)
     assert wrong.headers["location"] == "/login?erro=1"
-    assert client.post("/login", data={"senha": "DIVINA"}).status_code == 200
+    assert client.post("/login", data={"email": "Admin", "senha": "3510"}).status_code == 200
     assert client.get("/").status_code == 200
+
+
+def test_registration_login_logout_and_admin_protection():
+    client = TestClient(application.app)
+    email = f"usuario-{uuid.uuid4().hex}@example.com"
+    created = client.post(
+        "/cadastro",
+        data={"nome": "Usuario Teste", "email": email, "senha": "segredo1"},
+        follow_redirects=False,
+    )
+    assert created.headers["location"] == "/login?cadastrado=1"
+    assert client.post("/login", data={"email": email, "senha": "segredo1"}).status_code == 200
+    assert client.get("/me").json()["admin"] is False
+    assert client.get("/admin/estatisticas").status_code == 403
+    assert client.post("/logout", follow_redirects=False).headers["location"] == "/login"
+    assert client.get("/", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_admin_statistics_and_document_base_are_available_to_admin():
+    client = authenticated_client()
+    users = client.get("/admin/estatisticas")
+    documents = client.get("/admin/base-documental")
+
+    assert users.status_code == 200
+    assert "usuarios" in users.json()
+    assert documents.status_code == 200
+    assert "documentos" in documents.json()
