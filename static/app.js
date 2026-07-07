@@ -25,6 +25,17 @@ const presentationModule = document.querySelector("#presentation-module");
 const createScriptButton = document.querySelector("#create-script-button");
 const createSlidesButton = document.querySelector("#create-slides-button");
 const presentationStatus = document.querySelector("#presentation-status");
+const statsButton = document.querySelector("#stats-button");
+const statsModal = document.querySelector("#stats-modal");
+const statsSummary = document.querySelector("#stats-summary");
+const statsTable = document.querySelector("#stats-table");
+const adminDocumentsButton = document.querySelector("#admin-documents-button");
+const adminDocumentsModal = document.querySelector("#admin-documents-modal");
+const adminDocumentsSummary = document.querySelector("#admin-documents-summary");
+const adminDocumentsTable = document.querySelector("#admin-documents-table");
+const documentUploadForm = document.querySelector("#document-upload-form");
+const documentUpload = document.querySelector("#document-upload");
+const reindexDocumentsButton = document.querySelector("#reindex-documents-button");
 let conversationHistory = [];
 let currentPresentation = null;
 let isSearching = false;
@@ -125,6 +136,34 @@ function closeModal(modal) {
   if (modal.open) modal.close();
 }
 
+function renderTable(table, headers, rows) {
+  table.replaceChildren();
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  headers.forEach(header => {
+    const cell = document.createElement("th");
+    cell.textContent = header;
+    headRow.appendChild(cell);
+  });
+  thead.appendChild(headRow);
+  const tbody = document.createElement("tbody");
+  rows.forEach(row => {
+    const tr = document.createElement("tr");
+    row.forEach(value => {
+      const cell = document.createElement("td");
+      if (value instanceof Node) cell.appendChild(value);
+      else cell.textContent = value ?? "";
+      tr.appendChild(cell);
+    });
+    tbody.appendChild(tr);
+  });
+  table.append(thead, tbody);
+}
+
+function formatAdminDate(value) {
+  return value ? formatDate(value) : "-";
+}
+
 document.querySelectorAll("[data-close-modal]").forEach(button => {
   button.addEventListener("click", () => closeModal(button.closest("dialog")));
 });
@@ -155,6 +194,118 @@ databaseButton.addEventListener("click", async () => {
 });
 
 aboutButton.addEventListener("click", () => aboutModal.showModal());
+
+if (statsButton) {
+  statsButton.addEventListener("click", async () => {
+    statsSummary.textContent = "Consultando usuários...";
+    renderTable(statsTable, [], []);
+    statsModal.showModal();
+    try {
+      const data = await request("/admin/estatisticas");
+      statsSummary.textContent = `${data.usuarios.length} usuário(s) cadastrado(s).`;
+      renderTable(statsTable, ["Nome", "Email", "Conta", "Assinatura", "Acessos", "Último acesso", "Consultas", "Roteiros", "Slides"], data.usuarios.map(user => [
+        user.full_name,
+        user.email,
+        user.account_type,
+        user.subscription_status,
+        user.total_access_count,
+        formatAdminDate(user.last_access_at),
+        user.daily_query_count,
+        user.script_generation_count,
+        user.presentation_generation_count,
+      ]));
+    } catch (error) {
+      statsSummary.textContent = error.message;
+    }
+  });
+}
+
+async function refreshAdminDocuments() {
+  adminDocumentsSummary.textContent = "Consultando documentos...";
+  renderTable(adminDocumentsTable, [], []);
+  const data = await request("/admin/base-documental");
+  adminDocumentsSummary.textContent = `${data.documentos.length} documento(s) registrado(s).`;
+  renderTable(adminDocumentsTable, ["Documento", "Tipo", "Inclusão", "Status", "Ações"], data.documentos.map(documento => {
+    const actions = document.createElement("div");
+    const action = document.createElement("button");
+    action.type = "button";
+    action.textContent = documento.is_active ? "Desativar" : "Ativar";
+    action.addEventListener("click", async () => {
+      const endpoint = documento.is_active ? "/admin/base-documental/desativar" : "/admin/base-documental/ativar";
+      await request(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: documento.source }) });
+      await refreshAdminDocuments();
+      await refreshStatus();
+    });
+    const reindex = document.createElement("button");
+    reindex.type = "button";
+    reindex.textContent = "Reindexar";
+    reindex.addEventListener("click", async () => {
+      await request("/admin/base-documental/reindexar", { method: "POST" });
+      await refreshAdminDocuments();
+      await refreshStatus();
+    });
+    actions.className = "row-actions";
+    actions.append(action, reindex);
+    return [documento.filename, documento.file_type.toUpperCase(), formatAdminDate(documento.uploaded_at), documento.is_active ? "ativo" : "inativo", actions];
+  }));
+}
+
+if (adminDocumentsButton) {
+  adminDocumentsButton.addEventListener("click", async () => {
+    adminDocumentsModal.showModal();
+    try {
+      await refreshAdminDocuments();
+    } catch (error) {
+      adminDocumentsSummary.textContent = error.message;
+    }
+  });
+}
+
+if (reindexDocumentsButton) {
+  reindexDocumentsButton.addEventListener("click", async () => {
+    reindexDocumentsButton.disabled = true;
+    adminDocumentsSummary.textContent = "Reindexando a base...";
+    try {
+      await request("/admin/base-documental/reindexar", { method: "POST" });
+      await refreshAdminDocuments();
+      await refreshStatus();
+    } catch (error) {
+      adminDocumentsSummary.textContent = error.message;
+    } finally {
+      reindexDocumentsButton.disabled = false;
+    }
+  });
+}
+
+if (documentUploadForm) {
+  documentUploadForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    const file = documentUpload.files[0];
+    if (!file) return;
+    const chunkSize = 1024 * 1024;
+    let offset = 0;
+    adminDocumentsSummary.textContent = "Enviando documento...";
+    while (offset < file.size) {
+      const chunk = file.slice(offset, offset + chunkSize);
+      const complete = offset + chunk.size >= file.size;
+      const response = await fetch("/admin/upload-chunk", {
+        method: "POST",
+        headers: { "x-filename": encodeURIComponent(file.name), "x-offset": String(offset), "x-complete": complete ? "1" : "0" },
+        body: chunk,
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        adminDocumentsSummary.textContent = data.detail || "Não foi possível enviar o documento.";
+        return;
+      }
+      offset += chunk.size;
+      adminDocumentsSummary.textContent = `Enviando documento... ${Math.round((offset / file.size) * 100)}%`;
+    }
+    documentUploadForm.reset();
+    await refreshAdminDocuments();
+    await refreshStatus();
+  });
+}
 
 function archiveCurrentResult() {
   if (resultPanel.classList.contains("hidden") || !answerElement.textContent.trim()) return;

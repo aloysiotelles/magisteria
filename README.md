@@ -32,7 +32,6 @@ A versão 0.4.4 reduz o tempo da busca local com metadados preparados em memóri
 3. Substitua `sua_chave_aqui` pela chave da API, salve e feche o arquivo.
 4. Execute novamente `iniciar_magisteria.bat`.
 5. Aguarde a atualização automática da base. O navegador abrirá em `http://127.0.0.1:8000` somente quando o aplicativo estiver pronto.
-
 Se uma versão anterior ainda estiver aberta, o inicializador detectará a diferença e usará automaticamente outra porta local para abrir a versão atualizada.
 
 O usuário final não precisa digitar comandos no terminal.
@@ -100,7 +99,7 @@ O deploy de producao usa o `Dockerfile`. O processo escuta automaticamente a por
 
 ### 1. Criar e configurar o servico
 
-Ao conectar este repositorio pelo painel do Railway, mantenha a raiz padrao do servico. Depois, cadastre estas variaveis em **Variables**:
+Ao conectar este repositorio pelo painel do Railway, defina **Root Directory** como `/magister-ia`. Depois, cadastre estas variaveis em **Variables**:
 
 ```dotenv
 OPENAI_API_KEY=coloque_a_chave_no_painel
@@ -133,11 +132,11 @@ Pelo GitHub, dispare o deploy no painel depois de configurar a raiz, as variavei
 ```powershell
 railway login
 railway init
-railway up
+railway up .\magister-ia --path-as-root
 railway logs
 ```
 
-Para um projeto ja vinculado, novos deploys usam `railway up`.
+Para um projeto ja vinculado, novos deploys usam `railway up .\magister-ia --path-as-root`.
 
 ### Verificacao local antes do deploy
 

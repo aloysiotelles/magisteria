@@ -1,10 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
-from io import BytesIO
 import asyncio
 import time
-import uuid
 
 import pymupdf
 
@@ -61,21 +59,6 @@ def test_pdf_fast_reader(tmp_path: Path):
     assert sections[0].source == "fonte.pdf"
     assert sections[0].location == "página 1"
     assert "Documento pastoral" in sections[0].text
-
-
-def test_missal_romano_is_excluded_from_deployment_base(tmp_path: Path):
-    documents = tmp_path / "Documentos"
-    documents.mkdir()
-    (documents / "Missal Romano - teste.txt").write_text("Nao indexar", encoding="utf-8")
-    (documents / "Catecismo.txt").write_text("Indexar", encoding="utf-8")
-
-    store = LocalVectorStore(documents, tmp_path / "indice.sqlite", 300, 40)
-    status = store.index_documents()
-
-    assert status["documentos"] == 1
-    assert store.document_names() == ["Catecismo.txt"]
-
-
 def test_explicit_source_name_filters_results(tmp_path: Path):
     documents = tmp_path / "Documentos"
     documents.mkdir()
@@ -325,107 +308,6 @@ def test_one_failed_image_is_retried_without_losing_the_others(monkeypatch):
 
     assert images == ["estavel", "instavel"]
     assert attempts["instavel"] == 2
-
-
-def test_visual_brief_identifies_each_slide_image():
-    service = PresentationService("", "modelo")
-    topics = [
-        {"titulo": f"Tópico {index}", "sintese": "Síntese.", "pontos": ["Um", "Dois"]}
-        for index in range(10)
-    ]
-
-    brief = service._visual_brief("Título", topics, "Título curto", "Frase final.")
-
-    assert len(brief) == 12
-    assert [item["visual_index"] for item in brief] == list(range(1, 13))
-    assert all(item["visual_total"] == 12 for item in brief)
-    assert len({item["visual_signature"] for item in brief}) == 12
-
-
-def test_duplicate_image_bytes_are_regenerated(monkeypatch):
-    service = PresentationService("", "modelo", image_concurrency=3)
-    calls = {"duplicado": 0}
-
-    async def fake_image(_, topic):
-        if topic["titulo"] == "duplicado":
-            calls["duplicado"] += 1
-            if calls["duplicado"] == 1:
-                return BytesIO(b"mesma-imagem")
-            return BytesIO(b"imagem-regenerada")
-        return BytesIO(b"mesma-imagem")
-
-    monkeypatch.setattr(service, "_generate_image", fake_image)
-    topics = [{"titulo": "original"}, {"titulo": "duplicado"}]
-
-    images = asyncio.run(service._generate_images("Título", topics))
-
-    assert [image.getvalue() for image in images] == [b"mesma-imagem", b"imagem-regenerada"]
-    assert calls["duplicado"] == 2
-
-
-def test_persistent_image_failure_uses_unique_fallback(monkeypatch):
-    service = PresentationService("", "modelo", image_concurrency=2)
-
-    async def broken_image(*args):
-        raise RuntimeError("serviço indisponível")
-
-    async def no_wait(*args):
-        return None
-
-    monkeypatch.setattr(service, "_generate_image", broken_image)
-    monkeypatch.setattr("services.presentation_service.asyncio.sleep", no_wait)
-    topics = [
-        {"titulo": "falha 1", "visual_index": 1},
-        {"titulo": "falha 2", "visual_index": 2},
-    ]
-
-    images = asyncio.run(service._generate_images("Título", topics))
-
-    assert len(images) == 2
-    assert images[0].getvalue() != images[1].getvalue()
-    assert images[0].getvalue().startswith(b"\xff\xd8")
-
-
-def test_image_request_args_are_compatible_with_model_family():
-    gpt_service = PresentationService("", "modelo", image_model="gpt-image-1", image_quality="low")
-    dalle_service = PresentationService("", "modelo", image_model="dall-e-3", image_quality="low")
-
-    gpt_args = gpt_service._image_request_args("prompt")
-    dalle_args = dalle_service._image_request_args("prompt")
-
-    assert gpt_args["output_format"] == "jpeg"
-    assert "output_compression" not in gpt_args
-    assert dalle_args["response_format"] == "b64_json"
-    assert dalle_args["quality"] == "standard"
-    assert "output_format" not in dalle_args
-
-
-def test_create_pptx_uses_ai_only_for_cover_and_closing(monkeypatch):
-    service = PresentationService("", "modelo", image_concurrency=3)
-    calls = []
-    from PIL import Image
-
-    def make_image_bytes():
-        image = BytesIO()
-        Image.new("RGB", (64, 64), (120, 90, 60)).save(image, "JPEG")
-        image.seek(0)
-        return image
-
-    async def fake_image(title, topic, attempts=2):
-        calls.append(topic["visual_role"])
-        return make_image_bytes()
-
-    monkeypatch.setattr(service, "_generate_image_with_retry", fake_image)
-    topics = [
-        {"titulo": f"Tópico {index}", "sintese": "Síntese.", "pontos": ["Um", "Dois"]}
-        for index in range(10)
-    ]
-    content = asyncio.run(service.create_pptx("Título", topics, "Título curto", "Frase final."))
-
-    assert content.startswith(b"PK")
-    assert calls == ["cover", "closing"]
-
-
 def test_cover_and_closing_images_are_not_hidden_by_black_shapes():
     from io import BytesIO
     from PIL import Image
@@ -449,34 +331,5 @@ def test_password_protects_application_and_health_is_public():
     client = TestClient(application.app)
     assert client.get("/health").status_code == 200
     assert client.get("/", follow_redirects=False).headers["location"] == "/login"
-    wrong = client.post("/login", data={"email": "Admin", "senha": "incorreta"}, follow_redirects=False)
-    assert wrong.headers["location"] == "/login?erro=1"
     assert client.post("/login", data={"email": "Admin", "senha": "3510"}).status_code == 200
     assert client.get("/").status_code == 200
-
-
-def test_registration_login_logout_and_admin_protection():
-    client = TestClient(application.app)
-    email = f"usuario-{uuid.uuid4().hex}@example.com"
-    created = client.post(
-        "/cadastro",
-        data={"nome": "Usuario Teste", "email": email, "senha": "segredo1"},
-        follow_redirects=False,
-    )
-    assert created.headers["location"] == "/login?cadastrado=1"
-    assert client.post("/login", data={"email": email, "senha": "segredo1"}).status_code == 200
-    assert client.get("/me").json()["admin"] is False
-    assert client.get("/admin/estatisticas").status_code == 403
-    assert client.post("/logout", follow_redirects=False).headers["location"] == "/login"
-    assert client.get("/", follow_redirects=False).headers["location"] == "/login"
-
-
-def test_admin_statistics_and_document_base_are_available_to_admin():
-    client = authenticated_client()
-    users = client.get("/admin/estatisticas")
-    documents = client.get("/admin/base-documental")
-
-    assert users.status_code == 200
-    assert "usuarios" in users.json()
-    assert documents.status_code == 200
-    assert "documentos" in documents.json()

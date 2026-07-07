@@ -173,8 +173,14 @@ class LocalVectorStore:
         ranked.sort(key=lambda item: item["score"], reverse=True)
         return self._diversify(ranked, limit, bool(preferred))
 
-    def search_ordered(self, query: str, limit: int = 14, minimum_score: float = 0.08) -> list[dict]:
-        candidates = self.search(query, limit=300, minimum_score=minimum_score)
+    def search_ordered(
+        self,
+        query: str,
+        limit: int = 14,
+        minimum_score: float = 0.08,
+        excluded_sources: tuple[str, ...] = (),
+    ) -> list[dict]:
+        candidates = self.search(query, limit=300, minimum_score=minimum_score, excluded_sources=excluded_sources)
         buckets = [[] for _ in range(len(ORDERED_SOURCES) + 1)]
         for item in candidates:
             normalized = self._normalize(item["source"])

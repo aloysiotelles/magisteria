@@ -34,9 +34,11 @@ body::before {
 }
 
 .page-shell { width: min(1120px, calc(100% - 36px)); margin: 0 auto; position: relative; }
-.utility-nav { display: flex; justify-content: flex-end; gap: 8px; padding-top: 18px; margin-bottom: -18px; }
+.utility-nav { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 18px; margin-bottom: -18px; flex-wrap: wrap; }
 .utility-button { border: 0; border-bottom: 1px solid transparent; padding: 7px 5px; color: var(--forest); background: transparent; font: 600 .78rem "Segoe UI", Arial, sans-serif; cursor: pointer; }
 .utility-button:hover { color: var(--red); border-bottom-color: var(--gold); }
+.user-chip { color: var(--muted); font-size: .78rem; font-weight: 700; margin-right: 4px; }
+.logout-form { margin: 0; }
 
 .hero {
   display: flex;
@@ -160,6 +162,17 @@ textarea::placeholder { color: #929990; }
 .about-content { display: flex; align-items: center; gap: 20px; line-height: 1.7; }
 .about-content p { margin: 0; }
 .about-logo { width: 92px; height: 92px; flex: 0 0 auto; object-fit: cover; border-radius: 50%; }
+.admin-modal { width: min(980px, calc(100% - 30px)); }
+.table-wrap { overflow-x: auto; border: 1px solid #e5dfd0; border-radius: 9px; background: #fffdf8; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.admin-table th, .admin-table td { padding: 10px 12px; border-bottom: 1px solid #eee7d8; text-align: left; vertical-align: top; white-space: nowrap; }
+.admin-table th { color: var(--forest); background: #f7f3e8; font-weight: 800; }
+.admin-table tr:last-child td { border-bottom: 0; }
+.admin-table button { border: 1px solid #d8d2c2; border-radius: 8px; padding: 7px 9px; color: var(--forest); background: white; cursor: pointer; font-weight: 700; }
+.admin-table button:hover { color: white; background: var(--forest); border-color: var(--forest); }
+.row-actions { display: flex; gap: 6px; }
+.upload-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-bottom: 16px; }
+.upload-form input { width: 100%; padding: 11px; border: 1px solid #d8d2c2; border-radius: 10px; background: white; }
 .hidden { display: none !important; }
 .loading::after { content: ""; display: inline-block; width: 11px; height: 11px; margin-left: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .65s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -180,6 +193,7 @@ footer { padding: 28px 0 34px; color: #687269; font-size: .76rem; text-align: ce
   .actions { flex-direction: column; }
   .button { width: 100%; }
   .utility-nav { justify-content: center; margin-bottom: 0; }
+  .upload-form { grid-template-columns: 1fr; }
   .about-content { align-items: flex-start; flex-direction: column; }
 }
 

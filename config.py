@@ -14,6 +14,7 @@ class Settings:
     DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", str(BASE_DIR / "Documentos"))).expanduser()
     VECTOR_DIR = Path(os.getenv("VECTOR_DIR", str(BASE_DIR / "banco_vetorial"))).expanduser()
     INDEX_FILE = VECTOR_DIR / "indice.json"
+    APP_DATABASE_FILE = Path(os.getenv("APP_DATABASE_FILE", str(VECTOR_DIR / "magisteria.sqlite"))).expanduser()
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-nano").strip()
     OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
