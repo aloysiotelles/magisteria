@@ -5,18 +5,22 @@ import asyncio
 import hashlib
 from io import BytesIO
 import json
+import logging
 import re
 import unicodedata
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt, RGBColor
+import httpx
 from openai import AsyncOpenAI
 from openai import APIConnectionError, APIStatusError, RateLimitError
+from PIL import Image, ImageDraw
 
 
 MIN_PRESENTATION_TOPICS = 10
 MAX_PRESENTATION_TOPICS = 14
+logger = logging.getLogger(__name__)
 
 
 class PresentationService:
@@ -149,7 +153,11 @@ class PresentationService:
         for index, result in enumerate(results):
             if isinstance(result, Exception):
                 await asyncio.sleep(1)
-                results[index] = await self._generate_image_with_retry(title, topics[index], attempts=3)
+                try:
+                    results[index] = await self._generate_image_with_retry(title, topics[index], attempts=3)
+                except Exception as exc:
+                    logger.warning("Falha ao gerar imagem do slide %s; usando imagem reserva.", index + 1, exc_info=exc)
+                    results[index] = self._fallback_image(topics[index])
         seen: set[str] = set()
         for index, result in enumerate(results):
             digest = self._image_digest(result)
@@ -158,7 +166,11 @@ class PresentationService:
                     **topics[index],
                     "visual_signature": f"{topics[index].get('visual_signature', '')}; composição alternativa sem repetir imagens anteriores",
                 }
-                results[index] = await self._generate_image_with_retry(title, unique_topic, attempts=2)
+                try:
+                    results[index] = await self._generate_image_with_retry(title, unique_topic, attempts=2)
+                except Exception as exc:
+                    logger.warning("Falha ao regenerar imagem repetida do slide %s; usando imagem reserva.", index + 1, exc_info=exc)
+                    results[index] = self._fallback_image(unique_topic)
                 digest = self._image_digest(results[index])
             seen.add(digest)
         return list(results)
@@ -202,15 +214,64 @@ class PresentationService:
             f"Identidade visual exclusiva: {topic.get('visual_signature', '')}. "
             f"{direction} Tema geral: {title}. Tópico: {topic['titulo']}. Ideia: {topic['sintese']}"
         )
-        result = await self.client.images.generate(
-            model=self.image_model,
-            prompt=prompt,
-            size="1024x1024",
-            quality=self.image_quality,
-            output_format="jpeg",
-            output_compression=72,
-        )
-        return BytesIO(base64.b64decode(result.data[0].b64_json))
+        result = await self.client.images.generate(**self._image_request_args(prompt))
+        image = result.data[0]
+        if getattr(image, "b64_json", None):
+            return BytesIO(base64.b64decode(image.b64_json))
+        if getattr(image, "url", None):
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.get(image.url)
+                response.raise_for_status()
+                return BytesIO(response.content)
+        raise RuntimeError("O serviço de imagens não retornou um arquivo utilizável.")
+
+    def _image_request_args(self, prompt: str) -> dict:
+        args = {
+            "model": self.image_model,
+            "prompt": prompt,
+            "size": "1024x1024",
+        }
+        if self.image_model.startswith("dall-e"):
+            args["quality"] = "hd" if self.image_quality == "high" else "standard"
+            args["response_format"] = "b64_json"
+        else:
+            args["quality"] = self.image_quality
+            args["output_format"] = "jpeg"
+        return args
+
+    @staticmethod
+    def _fallback_image(topic: dict) -> BytesIO:
+        index = int(topic.get("visual_index", 1))
+        palettes = [
+            ((40, 28, 22), (165, 111, 45), (250, 238, 209)),
+            ((19, 45, 37), (92, 134, 95), (238, 226, 190)),
+            ((30, 36, 58), (119, 91, 150), (244, 231, 211)),
+            ((55, 33, 31), (150, 67, 48), (251, 230, 196)),
+            ((31, 45, 62), (62, 111, 145), (235, 226, 203)),
+            ((47, 39, 22), (154, 127, 59), (248, 238, 214)),
+        ]
+        dark, mid, light = palettes[(index - 1) % len(palettes)]
+        image = Image.new("RGB", (1024, 1024), dark)
+        pixels = image.load()
+        for y in range(1024):
+            ratio = y / 1023
+            base = tuple(int(dark[channel] * (1 - ratio) + mid[channel] * ratio) for channel in range(3))
+            for x in range(1024):
+                glow = max(0, 1 - (((x - 670) ** 2 + (y - 360) ** 2) ** 0.5 / 760))
+                pixels[x, y] = tuple(
+                    min(255, int(base[channel] * (1 - glow * 0.5) + light[channel] * glow * 0.5))
+                    for channel in range(3)
+                )
+        draw = ImageDraw.Draw(image, "RGBA")
+        for offset in range(0, 1024, 96):
+            alpha = 32 + ((offset + index * 17) % 48)
+            draw.line([(offset - 260, 1024), (offset + 360, 0)], fill=(*light, alpha), width=10)
+        draw.ellipse((650, 160, 930, 440), fill=(*light, 46))
+        draw.ellipse((700, 210, 880, 390), fill=(*light, 54))
+        output = BytesIO()
+        image.save(output, "JPEG", quality=86)
+        output.seek(0)
+        return output
 
     @staticmethod
     def _visual_signature(index: int) -> str:
