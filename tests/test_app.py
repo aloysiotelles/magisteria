@@ -197,6 +197,32 @@ def test_source_references_use_document_specific_locators():
     assert "CONCÍLIO VATICANO II" in abnt
 
 
+def test_abnt_references_skip_weak_auxiliary_sources():
+    chunks = [
+        {
+            "source": "Catecismo da Igreja CatÃ³lica.pdf",
+            "location": "pÃ¡gina 10",
+            "text": "",
+            "score": 0.8,
+            "referencias": ["1210"],
+            "categoria": "Catecismo",
+        },
+        {
+            "source": "Documento apenas tangencial.pdf",
+            "location": "pÃ¡gina 44",
+            "text": "",
+            "score": 0.1,
+            "referencias": [],
+            "categoria": "Demais documentos",
+        },
+    ]
+
+    abnt = format_abnt_references(chunks)
+
+    assert "Catecismo da Igreja" in abnt
+    assert "DOCUMENTO APENAS TANGENCIAL" not in abnt
+
+
 def test_routes_and_closed_base_behavior(monkeypatch):
     client = authenticated_client()
     monkeypatch.setattr(application.vector_store, "search_ordered", lambda *args, **kwargs: [])

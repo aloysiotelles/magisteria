@@ -22,7 +22,7 @@ from services.auth_repository import AuthRepository
 from services.presentation_service import PresentationService, safe_filename
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(

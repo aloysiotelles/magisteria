@@ -143,7 +143,7 @@ def format_sources(chunks: list[dict]) -> list[dict]:
             local = "Referência de capítulo e versículo não identificada no trecho"
         else:
             local = "; ".join(locations)
-        sources.append({**item, "local": local})
+        sources.append({**item, "local": local, "tem_referencias": bool(references)})
     return sources
 
 
@@ -165,7 +165,11 @@ def _compact_references(references: list[str]) -> list[str]:
 
 def format_abnt_references(chunks: list[dict]) -> str:
     lines = []
-    for source in format_sources(chunks):
+    sources = format_sources(chunks)
+    best_relevance = max((source.get("relevancia", 0) for source in sources), default=0)
+    for source in sources:
+        if not _should_include_abnt_source(source, best_relevance):
+            continue
         filename = source["arquivo"]
         normalized = filename.lower()
         locator = source["local"].replace("página ", "p. ")
@@ -195,3 +199,11 @@ def format_abnt_references(chunks: list[dict]) -> str:
             entry = f"{title.upper()}. [S. l.: s. n.], [s. d.]. {locator}."
         lines.append(entry)
     return "\n".join(lines)
+
+
+def _should_include_abnt_source(source: dict, best_relevance: float) -> bool:
+    """Evita citar documentos que apareceram apenas como achado fraco na busca."""
+    if source.get("tem_referencias"):
+        return True
+    relevance = source.get("relevancia", 0)
+    return relevance >= max(0.2, best_relevance * 0.55)
