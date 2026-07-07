@@ -23,7 +23,7 @@ from services.answer_service import AnswerService, format_abnt_references, forma
 from services.presentation_service import PresentationService, safe_filename
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(

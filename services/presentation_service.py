@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import hashlib
 from io import BytesIO
 import json
 import re
@@ -12,6 +13,10 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt, RGBColor
 from openai import AsyncOpenAI
 from openai import APIConnectionError, APIStatusError, RateLimitError
+
+
+MIN_PRESENTATION_TOPICS = 10
+MAX_PRESENTATION_TOPICS = 14
 
 
 class PresentationService:
@@ -35,24 +40,25 @@ class PresentationService:
         response = await self.client.responses.create(
             model=self.text_model,
             instructions=(
-                "Organize exclusivamente o conteúdo fornecido em 4 a 8 tópicos para uma pregação ou palestra. "
+                "Organize exclusivamente o conteúdo fornecido em 10 a 14 tópicos para uma pregação ou palestra. "
                 "Não acrescente fatos, citações ou referências externas. Cada tópico deve ter título curto, "
-                "síntese de até 45 palavras e 2 a 4 pontos de desenvolvimento. Crie também um título de capa "
-                "marcante, coerente e com no máximo 7 palavras, e uma frase final de até 24 palavras que resuma "
-                "a mensagem central. Responda somente em JSON válido."
+                "síntese de até 38 palavras e 2 a 3 pontos de desenvolvimento. Divida ideias amplas em etapas "
+                "menores para que a apresentação tenha ritmo, progressão e mais slides. Crie também um título "
+                "de capa marcante, coerente e com no máximo 7 palavras, e uma frase final de até 24 palavras que "
+                "resuma a mensagem central. Responda somente em JSON válido."
             ),
             input=f"TÍTULO: {title}\n\nCONTEÚDO: {answer}",
             text={"format": {"type": "json_schema", "name": "roteiro", "strict": True, "schema": {
                 "type": "object", "properties": {
                 "titulo_curto": {"type": "string"},
                 "frase_final": {"type": "string"},
-                "topicos": {"type": "array", "minItems": 4, "maxItems": 8,
+                "topicos": {"type": "array", "minItems": MIN_PRESENTATION_TOPICS, "maxItems": MAX_PRESENTATION_TOPICS,
                 "items": {"type": "object", "properties": {
                     "titulo": {"type": "string"}, "sintese": {"type": "string"},
-                    "pontos": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "string"}}
+                    "pontos": {"type": "array", "minItems": 2, "maxItems": 3, "items": {"type": "string"}}
                 }, "required": ["titulo", "sintese", "pontos"], "additionalProperties": False}}},
                 "required": ["titulo_curto", "frase_final", "topicos"], "additionalProperties": False}}},
-            max_output_tokens=1800,
+            max_output_tokens=3600,
         )
         return json.loads(response.output_text)
 
@@ -107,11 +113,7 @@ class PresentationService:
 
         short_title = short_title or title
         closing_phrase = closing_phrase or "A mensagem acolhida com fé transforma a vida e renova a esperança."
-        visual_brief = [
-            {"titulo": short_title, "sintese": title, "visual_role": "cover"},
-            *topics,
-            {"titulo": "Encerramento", "sintese": closing_phrase, "visual_role": "closing"},
-        ]
+        visual_brief = self._visual_brief(title, topics, short_title, closing_phrase)
         images = await self._generate_images(title, visual_brief)
         prs = Presentation()
         prs.slide_width, prs.slide_height = PptInches(13.333), PptInches(7.5)
@@ -122,6 +124,18 @@ class PresentationService:
         output = BytesIO()
         prs.save(output)
         return output.getvalue()
+
+    def _visual_brief(self, title: str, topics: list[dict], short_title: str, closing_phrase: str) -> list[dict]:
+        total = len(topics) + 2
+        brief = [
+            {"titulo": short_title, "sintese": title, "visual_role": "cover"},
+            *topics,
+            {"titulo": "Encerramento", "sintese": closing_phrase, "visual_role": "closing"},
+        ]
+        return [
+            {**item, "visual_index": index, "visual_total": total, "visual_signature": self._visual_signature(index)}
+            for index, item in enumerate(brief, 1)
+        ]
 
     async def _generate_images(self, title: str, topics: list[dict]) -> list[BytesIO]:
         semaphore = asyncio.Semaphore(self.image_concurrency)
@@ -136,6 +150,17 @@ class PresentationService:
             if isinstance(result, Exception):
                 await asyncio.sleep(1)
                 results[index] = await self._generate_image_with_retry(title, topics[index], attempts=3)
+        seen: set[str] = set()
+        for index, result in enumerate(results):
+            digest = self._image_digest(result)
+            if digest in seen:
+                unique_topic = {
+                    **topics[index],
+                    "visual_signature": f"{topics[index].get('visual_signature', '')}; composição alternativa sem repetir imagens anteriores",
+                }
+                results[index] = await self._generate_image_with_retry(title, unique_topic, attempts=2)
+                digest = self._image_digest(results[index])
+            seen.add(digest)
         return list(results)
 
     async def _generate_image_with_retry(self, title: str, topic: dict, attempts: int = 2) -> BytesIO:
@@ -171,6 +196,10 @@ class PresentationService:
         prompt = (
             "Ilustração editorial cinematográfica, reverente e acolhedora, sem texto, letras ou logotipos, "
             "para apresentação católica contemporânea. Evite retratar Deus literalmente. "
+            "Cada slide desta apresentação deve ter imagem inédita; não reutilize personagens, enquadramento, "
+            "cenário ou composição dos demais slides. "
+            f"Imagem {topic.get('visual_index', 1)} de {topic.get('visual_total', 1)}. "
+            f"Identidade visual exclusiva: {topic.get('visual_signature', '')}. "
             f"{direction} Tema geral: {title}. Tópico: {topic['titulo']}. Ideia: {topic['sintese']}"
         )
         result = await self.client.images.generate(
@@ -182,6 +211,38 @@ class PresentationService:
             output_compression=72,
         )
         return BytesIO(base64.b64decode(result.data[0].b64_json))
+
+    @staticmethod
+    def _visual_signature(index: int) -> str:
+        signatures = [
+            "plano aberto com arquitetura sacra e luz atravessando o ambiente",
+            "detalhe simbólico de mãos, livro e vela em atmosfera de recolhimento",
+            "caminho externo ao amanhecer com profundidade e horizonte luminoso",
+            "comunidade reunida em silhuetas discretas, clima de escuta e unidade",
+            "mesa simples com Bíblia aberta, textura artesanal e luz lateral quente",
+            "vitrais abstratos projetando cores suaves sem texto nem figuras literais",
+            "paisagem serena com cruz distante, nuvens dramáticas e luz de esperança",
+            "interior contemporâneo minimalista com foco em símbolo sacramental",
+            "peregrinação em estrada de pedra, movimento sutil e perspectiva baixa",
+            "luz dourada sobre detalhes de madeira, tecido e objeto litúrgico discreto",
+            "jardim silencioso após a chuva, atmosfera de renovação e contemplação",
+            "assembleia em penumbra com feixe de luz central e composição cinematográfica",
+            "porta aberta para ambiente iluminado, símbolo de passagem e conversão",
+            "céu amplo com raios de sol e elementos naturais em composição reverente",
+            "capela pequena vista em diagonal, profundidade elegante e sombras suaves",
+            "detalhe de passos no chão, sinal de missão e continuidade",
+        ]
+        return signatures[(index - 1) % len(signatures)]
+
+    @staticmethod
+    def _image_digest(image: BytesIO) -> str:
+        if not hasattr(image, "tell") or not hasattr(image, "seek") or not hasattr(image, "read"):
+            return hashlib.sha256(repr(image).encode("utf-8")).hexdigest()
+        position = image.tell()
+        image.seek(0)
+        digest = hashlib.sha256(image.read()).hexdigest()
+        image.seek(position)
+        return digest
 
     @staticmethod
     def _add_title_slide(prs, title: str, image: BytesIO) -> None:

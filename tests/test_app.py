@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
+from io import BytesIO
 import asyncio
 import time
 
@@ -323,6 +324,42 @@ def test_one_failed_image_is_retried_without_losing_the_others(monkeypatch):
 
     assert images == ["estavel", "instavel"]
     assert attempts["instavel"] == 2
+
+
+def test_visual_brief_identifies_each_slide_image():
+    service = PresentationService("", "modelo")
+    topics = [
+        {"titulo": f"Tópico {index}", "sintese": "Síntese.", "pontos": ["Um", "Dois"]}
+        for index in range(10)
+    ]
+
+    brief = service._visual_brief("Título", topics, "Título curto", "Frase final.")
+
+    assert len(brief) == 12
+    assert [item["visual_index"] for item in brief] == list(range(1, 13))
+    assert all(item["visual_total"] == 12 for item in brief)
+    assert len({item["visual_signature"] for item in brief}) == 12
+
+
+def test_duplicate_image_bytes_are_regenerated(monkeypatch):
+    service = PresentationService("", "modelo", image_concurrency=3)
+    calls = {"duplicado": 0}
+
+    async def fake_image(_, topic):
+        if topic["titulo"] == "duplicado":
+            calls["duplicado"] += 1
+            if calls["duplicado"] == 1:
+                return BytesIO(b"mesma-imagem")
+            return BytesIO(b"imagem-regenerada")
+        return BytesIO(b"mesma-imagem")
+
+    monkeypatch.setattr(service, "_generate_image", fake_image)
+    topics = [{"titulo": "original"}, {"titulo": "duplicado"}]
+
+    images = asyncio.run(service._generate_images("Título", topics))
+
+    assert [image.getvalue() for image in images] == [b"mesma-imagem", b"imagem-regenerada"]
+    assert calls["duplicado"] == 2
 
 
 def test_cover_and_closing_images_are_not_hidden_by_black_shapes():
