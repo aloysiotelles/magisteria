@@ -6,14 +6,15 @@ import argparse
 from http.cookiejar import CookieJar
 import json
 from pathlib import Path
+import socket
 import time
 import unicodedata
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, quote
 from urllib.request import build_opener, HTTPCookieProcessor, Request
 
 
-CHUNK_SIZE = 4 * 1024 * 1024
+CHUNK_SIZE = 512 * 1024
 
 
 def normalized(text: str) -> str:
@@ -22,11 +23,17 @@ def normalized(text: str) -> str:
 
 
 def request(opener, url: str, *, data: bytes = b"", headers: dict | None = None):
-    try:
-        with opener.open(Request(url, data=data, headers=headers or {}), timeout=120) as response:
-            return response.read()
-    except HTTPError as exc:
-        raise RuntimeError(f"Falha HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
+    for attempt in range(5):
+        try:
+            with opener.open(Request(url, data=data, headers=headers or {}), timeout=120) as response:
+                return response.read()
+        except HTTPError as exc:
+            raise RuntimeError(f"Falha HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
+        except (URLError, TimeoutError, socket.timeout) as exc:
+            if attempt == 4:
+                raise
+            time.sleep(2 * (attempt + 1))
+    raise RuntimeError("Falha de rede inesperada.")
 
 
 def main() -> None:
@@ -75,7 +82,7 @@ def main() -> None:
                     data=chunk,
                     headers={
                         "Content-Type": "application/octet-stream",
-                        "X-Filename": quote(path.name),
+                        "X-Path": quote(path.relative_to(args.documentos).as_posix()),
                         "X-Offset": str(offset),
                         "X-Complete": "1" if complete else "0",
                     },

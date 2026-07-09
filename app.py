@@ -22,7 +22,7 @@ from services.auth_repository import AuthRepository
 from services.presentation_service import PresentationService, safe_filename
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.5.9"
+APP_VERSION = "0.5.10"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -544,6 +544,42 @@ async def admin_statistics(request: Request):
 async def admin_document_base(request: Request):
     require_admin(request)
     return {"documentos": auth_repository.list_documents()}
+
+
+def safe_document_path(encoded_path: str) -> Path:
+    relative = unquote(encoded_path).replace("\\", "/").strip("/")
+    candidate = (settings.DOCUMENTS_DIR / relative).resolve()
+    base = settings.DOCUMENTS_DIR.resolve()
+    if not relative or candidate == base or base not in candidate.parents:
+        raise HTTPException(status_code=400, detail="Caminho de documento invalido.")
+    if candidate.suffix.lower() not in {".pdf", ".docx", ".txt", ".md", ".markdown"}:
+        raise HTTPException(status_code=400, detail="Tipo de arquivo nao permitido.")
+    return candidate
+
+
+@app.post("/admin/upload-chunk")
+async def upload_document_chunk(request: Request):
+    require_admin(request)
+    filename = request.headers.get("X-Path") or request.headers.get("X-Filename", "")
+    target = safe_document_path(filename)
+    try:
+        offset = int(request.headers.get("X-Offset", "0"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Offset invalido.") from exc
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="Offset invalido.")
+    content = await request.body()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = "r+b" if target.exists() else "wb"
+    with target.open(mode) as output:
+        output.seek(offset)
+        output.write(content)
+        output.truncate(offset + len(content))
+    return {
+        "arquivo": target.relative_to(settings.DOCUMENTS_DIR).as_posix(),
+        "bytes": offset + len(content),
+        "completo": request.headers.get("X-Complete") == "1",
+    }
 
 
 @app.post("/admin/base-documental/desativar")

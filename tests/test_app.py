@@ -431,3 +431,34 @@ def test_admin_can_clear_document_base(monkeypatch, tmp_path: Path):
     assert not (documents / "antigo.pdf").exists()
     assert not (documents / "antigo.md").exists()
     assert (documents / "manter.png").exists()
+
+
+def test_admin_can_upload_document_chunks(monkeypatch, tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    monkeypatch.setattr(application.settings, "DOCUMENTS_DIR", documents)
+
+    client = authenticated_client()
+    response = client.post(
+        "/admin/upload-chunk",
+        content=b"parte 1 ",
+        headers={
+            "X-Path": "subpasta/documento.txt",
+            "X-Offset": "0",
+            "X-Complete": "0",
+        },
+    )
+    second = client.post(
+        "/admin/upload-chunk",
+        content=b"parte 2",
+        headers={
+            "X-Path": "subpasta/documento.txt",
+            "X-Offset": "8",
+            "X-Complete": "1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["arquivo"] == "subpasta/documento.txt"
+    assert (documents / "subpasta" / "documento.txt").read_text(encoding="utf-8") == "parte 1 parte 2"
