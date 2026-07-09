@@ -32,7 +32,8 @@ def request(opener, url: str, *, data: bytes = b"", headers: dict | None = None)
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="https://magisteria-production.up.railway.app")
-    parser.add_argument("--senha", default="DIVINA")
+    parser.add_argument("--email", default="Admin")
+    parser.add_argument("--senha", default="3510")
     parser.add_argument("--documentos", type=Path, default=Path(__file__).parent / "Documentos")
     parser.add_argument("--substituir", action="store_true", help="Apaga a base remota antes de enviar os arquivos.")
     args = parser.parse_args()
@@ -43,7 +44,7 @@ def main() -> None:
             request(
                 opener,
                 f"{base_url}/login",
-                data=urlencode({"senha": args.senha}).encode(),
+                data=urlencode({"email": args.email, "senha": args.senha}).encode(),
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             break
