@@ -95,6 +95,20 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
 Use HTTPS, um proxy reverso e armazenamento persistente para `Documentos` e `banco_vetorial`. Login, upload, pagamentos e os demais módulos futuros não fazem parte desta versão; os serviços estão separados para permitir essa evolução sem reescrever o núcleo.
 
+## Atalhos de deploy
+
+Dentro da pasta `magister-ia`, estes atalhos ficam disponíveis no terminal:
+
+```powershell
+SUBA
+SUBA ISTO C:\caminho\do\arquivo.pdf
+```
+
+- `SUBA` publica a aplicação usando o fluxo de deploy já existente.
+- `SUBA ISTO` copia um arquivo permitido para `Documentos`, envia a base remota e reindexa ao final.
+
+O atalho `SUBA ISTO` aceita apenas `.md`, `.txt`, `.docx` e `.pdf`. Se você anexar o arquivo no prompt e chamar `SUBA ISTO`, ele tenta localizar automaticamente o anexo mais recente compatível; se quiser, também pode informar o caminho manualmente.
+
 ## Deploy no Railway
 
 O deploy de producao usa o `Dockerfile`. O processo escuta automaticamente a porta fornecida pelo Railway e o endpoint `GET /health` e usado como health check.
