@@ -14,7 +14,7 @@ import webbrowser
 import uvicorn
 
 
-EXPECTED_VERSION = "0.5.3"
+EXPECTED_VERSION = "0.5.8"
 HOST = "127.0.0.1"
 PREFERRED_PORT = 8000
 

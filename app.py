@@ -22,7 +22,7 @@ from services.auth_repository import AuthRepository
 from services.presentation_service import PresentationService, safe_filename
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.9"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -134,11 +134,14 @@ def auth_page(title: str, intro: str, action: str, fields: str, footer: str, mes
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)} - MAGISTERIA</title><style>
 body{{font-family:system-ui;background:#f3efe7;display:grid;place-items:center;min-height:100vh;margin:0;color:#251d16}}
-form{{background:white;padding:2rem;border-radius:18px;box-shadow:0 12px 40px #0002;width:min(400px,86vw)}}
+form{{background:white;padding:2rem;border-radius:18px;box-shadow:0 12px 40px #0002;width:min(420px,86vw);text-align:center}}
 input,button{{box-sizing:border-box;width:100%;padding:.9rem;margin-top:8px;border-radius:10px;font-size:1rem}}
 input{{border:1px solid #9a8c7b}}button{{border:0;background:#173f2a;color:white;font-weight:700;cursor:pointer}}
 a{{color:#a52a20;font-weight:700;text-decoration:none}}.erro{{color:#a11}}.sucesso{{color:#17613a}}h1{{margin:.2rem 0;color:#173f2a}}
-</style></head><body><form method="post" action="{action}"><h1>MAGISTERIA</h1>
+.auth-logo{{width:128px;height:128px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 8px 14px #0002);margin-bottom:.7rem}}
+.auth-slogan{{color:#173f2a;font-weight:800;line-height:1.45;margin:.25rem 0 1rem}}.auth-slogan strong{{color:#a52a20}}
+</style></head><body><form method="post" action="{action}"><img class="auth-logo" src="/static/logo-magisteria.png" alt="Logo MAGISTERIA"><h1>MAGISTERIA</h1>
+<p class="auth-slogan">Gaste tempo <strong>EVANGELIZANDO</strong>, não pesquisando</p>
 <p>{html.escape(intro)}</p>{notice}{fields}<button type="submit">{html.escape(title)}</button><p>{footer}</p></form></body></html>""")
 
 
@@ -168,7 +171,9 @@ async def register_page(erro: str = ""):
     fields = """
 <input type="text" name="nome" placeholder="Nome completo" required autofocus>
 <input type="email" name="email" placeholder="Email" required>
-<input type="password" name="senha" placeholder="Senha" required minlength="6">
+<input type="password" name="senha" placeholder="Senha forte" required minlength="8"
+       pattern="(?=.*[a-záéíóúàâêôãõç])(?=.*[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ])(?=.*[0-9]).{8,}"
+       title="Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número.">
 """
     return auth_page("Criar cadastro", "Crie sua conta gratuita.", "/cadastro", fields, 'Ja tem conta? <a href="/login">Entrar</a>.', erro, bool(erro))
 
@@ -230,11 +235,14 @@ def auth_page(title: str, intro: str, action: str, fields: str, footer: str, mes
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)} - MAGISTERIA</title><style>
 body{{font-family:system-ui;background:#f3efe7;display:grid;place-items:center;min-height:100vh;margin:0;color:#251d16}}
-form{{background:white;padding:2rem;border-radius:18px;box-shadow:0 12px 40px #0002;width:min(400px,86vw)}}
+form{{background:white;padding:2rem;border-radius:18px;box-shadow:0 12px 40px #0002;width:min(420px,86vw);text-align:center}}
 input,button{{box-sizing:border-box;width:100%;padding:.9rem;margin-top:8px;border-radius:10px;font-size:1rem}}
 input{{border:1px solid #9a8c7b}}button{{border:0;background:#173f2a;color:white;font-weight:700;cursor:pointer}}
 a{{color:#a52a20;font-weight:700;text-decoration:none}}.erro{{color:#a11}}.sucesso{{color:#17613a}}h1{{margin:.2rem 0;color:#173f2a}}
-</style></head><body><form method="post" action="{action}"><h1>MAGISTERIA</h1>
+.auth-logo{{width:128px;height:128px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 8px 14px #0002);margin-bottom:.7rem}}
+.auth-slogan{{color:#173f2a;font-weight:800;line-height:1.45;margin:.25rem 0 1rem}}.auth-slogan strong{{color:#a52a20}}
+</style></head><body><form method="post" action="{action}"><img class="auth-logo" src="/static/logo-magisteria.png" alt="Logo MAGISTERIA"><h1>MAGISTERIA</h1>
+<p class="auth-slogan">Gaste tempo <strong>EVANGELIZANDO</strong>, não pesquisando</p>
 <p>{html.escape(intro)}</p>{notice}{fields}<button type="submit">{html.escape(title)}</button><p>{footer}</p></form></body></html>""")
 
 
@@ -264,7 +272,9 @@ async def register_page(erro: str = ""):
     fields = """
 <input type="text" name="nome" placeholder="Nome completo" required autofocus>
 <input type="email" name="email" placeholder="Email" required>
-<input type="password" name="senha" placeholder="Senha" required minlength="6">
+<input type="password" name="senha" placeholder="Senha forte" required minlength="8"
+       pattern="(?=.*[a-záéíóúàâêôãõç])(?=.*[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ])(?=.*[0-9]).{8,}"
+       title="Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número.">
 """
     return auth_page("Criar cadastro", "Crie sua conta gratuita.", "/cadastro", fields, 'Ja tem conta? <a href="/login">Entrar</a>.', erro, bool(erro))
 
@@ -284,6 +294,48 @@ async def logout(request: Request):
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie(AUTH_COOKIE)
     return response
+
+
+@app.post("/alterar-senha")
+async def change_password(request: Request):
+    user = current_user(request)
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        payload = {}
+    current_password = str(
+        payload.get("senha_atual")
+        or payload.get("current_password")
+        or payload.get("currentPassword")
+        or payload.get("senhaAtual")
+        or ""
+    )
+    new_password = str(
+        payload.get("nova_senha")
+        or payload.get("new_password")
+        or payload.get("newPassword")
+        or payload.get("novaSenha")
+        or ""
+    )
+    confirm_password = str(
+        payload.get("confirmar_senha")
+        or payload.get("confirm_password")
+        or payload.get("confirmPassword")
+        or payload.get("confirmarSenha")
+        or ""
+    )
+    if not current_password:
+        raise HTTPException(status_code=400, detail="Informe a senha atual.")
+    if not new_password:
+        raise HTTPException(status_code=400, detail="Informe a nova senha.")
+    if not confirm_password:
+        raise HTTPException(status_code=400, detail="Confirme a nova senha.")
+    if new_password != confirm_password:
+        raise HTTPException(status_code=400, detail="A confirmacao da nova senha nao confere.")
+    ok, message = auth_repository.change_password(user["id"], current_password, new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"mensagem": message}
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
@@ -296,6 +348,12 @@ class ConversationTurn(BaseModel):
 class QuestionRequest(BaseModel):
     pergunta: str = Field(min_length=3, max_length=2000)
     historico: list[ConversationTurn] = Field(default_factory=list, max_length=6)
+
+
+class PasswordChangeRequest(BaseModel):
+    senha_atual: str = Field(min_length=1, max_length=200)
+    nova_senha: str = Field(min_length=8, max_length=200)
+    confirmar_senha: str = Field(min_length=8, max_length=200)
 
 
 class PresentationRequest(BaseModel):
@@ -319,9 +377,48 @@ def ordered_chunks(payload: QuestionRequest) -> list[dict]:
     )
 
 
+def homily_style_chunks(payload: QuestionRequest) -> list[dict]:
+    chunks = vector_store.search(
+        retrieval_query(payload),
+        limit=3,
+        minimum_score=0.02,
+        source_filter=("joao-paulo-ii-homilias", "homilias"),
+        excluded_sources=auth_repository.inactive_sources(),
+    )
+    if chunks:
+        return chunks
+    return vector_store.search(
+        "Cristo Igreja Deus homem amor esperança fé",
+        limit=3,
+        minimum_score=0,
+        source_filter=("joao-paulo-ii-homilias", "homilias"),
+        excluded_sources=auth_repository.inactive_sources(),
+    )
+
+
+def public_document_names() -> list[str]:
+    inactive = set(auth_repository.inactive_sources())
+    names = [name for name in vector_store.document_names() if name not in inactive]
+    consolidated: list[str] = []
+    has_homilies = False
+    for name in names:
+        normalized = name.lower()
+        if "joao-paulo-ii-homilias" in normalized or "homilia" in normalized:
+            has_homilies = True
+            continue
+        consolidated.append(name)
+    if has_homilies:
+        consolidated.append("Homilias de São João Paulo II")
+    return sorted(dict.fromkeys(consolidated), key=str.casefold)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html", context={"user": current_user(request)})
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"user": current_user(request), "app_version": APP_VERSION},
+    )
 
 
 @app.post("/perguntar")
@@ -330,9 +427,10 @@ async def ask(payload: QuestionRequest, request: Request):
         raise HTTPException(status_code=503, detail="A base documental ainda está sendo atualizada.")
     question = payload.pergunta.strip()
     chunks = await asyncio.to_thread(ordered_chunks, payload)
+    style_chunks = await asyncio.to_thread(homily_style_chunks, payload) if chunks else []
     history = [turn.model_dump() for turn in payload.historico]
     try:
-        answer = await answer_service.answer(question, chunks, history)
+        answer = await answer_service.answer(question, chunks, history, style_chunks)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -348,6 +446,7 @@ async def ask_stream(payload: QuestionRequest, request: Request):
 
     question = payload.pergunta.strip()
     chunks = await asyncio.to_thread(ordered_chunks, payload)
+    style_chunks = await asyncio.to_thread(homily_style_chunks, payload) if chunks else []
     history = [turn.model_dump() for turn in payload.historico]
     if chunks and not answer_service.api_key:
         raise HTTPException(status_code=503, detail="A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
@@ -362,7 +461,7 @@ async def ask_stream(payload: QuestionRequest, request: Request):
             ensure_ascii=False,
         ) + "\n"
         try:
-            async for delta in answer_service.stream_answer(question, chunks, history):
+            async for delta in answer_service.stream_answer(question, chunks, history, style_chunks):
                 yield json.dumps({"tipo": "texto", "texto": delta}, ensure_ascii=False) + "\n"
             yield json.dumps({"tipo": "fim"}) + "\n"
         except asyncio.CancelledError:
@@ -432,8 +531,7 @@ async def health():
 
 @app.get("/documentos")
 async def documents():
-    active = [item["source"] for item in auth_repository.list_documents() if item["is_active"]]
-    return {"documentos": active}
+    return {"documentos": public_document_names()}
 
 
 @app.get("/admin/estatisticas")
@@ -475,6 +573,21 @@ async def reindex_document_base(request: Request):
         raise HTTPException(status_code=409, detail="A base documental ja esta sendo atualizada.")
     status = await perform_indexing()
     return {"mensagem": "Base documental reindexada.", "status": status}
+
+
+@app.post("/admin/base-documental/limpar")
+async def clear_document_base(request: Request):
+    require_admin(request)
+    if index_lock.locked():
+        raise HTTPException(status_code=409, detail="A base documental ja esta sendo atualizada.")
+    extensions = {".pdf", ".docx", ".txt", ".md", ".markdown"}
+    removed: list[str] = []
+    for path in settings.DOCUMENTS_DIR.rglob("*"):
+        if path.is_file() and path.suffix.lower() in extensions:
+            removed.append(path.relative_to(settings.DOCUMENTS_DIR).as_posix())
+            path.unlink()
+    status = await perform_indexing()
+    return {"mensagem": "Base documental limpa.", "removidos": removed, "status": status}
 
 
 @app.get("/versao")

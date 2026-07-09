@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 
@@ -74,11 +75,11 @@ class AuthRepository:
                 db.execute(
                     """
                     UPDATE users
-                    SET full_name = 'Administrador', password_hash = ?, role = 'admin', account_type = 'completa',
+                    SET full_name = 'Administrador', role = 'admin', account_type = 'completa',
                         subscription_status = 'ativa'
                     WHERE id = ?
                     """,
-                    (password_hash, admin["id"]),
+                    (admin["id"],),
                 )
                 return
             db.execute(
@@ -98,8 +99,9 @@ class AuthRepository:
             return False, "Informe o nome completo."
         if "@" not in email or "." not in email:
             return False, "Informe um email valido."
-        if len(password) < 6:
-            return False, "A senha deve ter pelo menos 6 caracteres."
+        valid, message = self.validate_password_strength(password)
+        if not valid:
+            return False, message
         try:
             with self._connect() as db:
                 db.execute(
@@ -118,6 +120,21 @@ class AuthRepository:
         if user and self.verify_password(password, user["password_hash"]):
             return user
         return None
+
+    def change_password(self, user_id: int, current_password: str, new_password: str) -> tuple[bool, str]:
+        with self._connect() as db:
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                return False, "Usuario nao encontrado."
+            if not self.verify_password(current_password, user["password_hash"]):
+                return False, "A senha atual nao confere."
+
+            valid, message = self.validate_password_strength(new_password)
+            if not valid:
+                return False, message
+
+            db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (self.hash_password(new_password), user_id))
+        return True, "Senha alterada com sucesso."
 
     def find_user_by_login(self, login: str) -> sqlite3.Row | None:
         login = login.strip()
@@ -209,6 +226,18 @@ class AuthRepository:
         salt = secrets.token_bytes(16)
         digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS)
         return f"pbkdf2_sha256${PASSWORD_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+    @staticmethod
+    def validate_password_strength(password: str) -> tuple[bool, str]:
+        if len(password) < 8:
+            return False, "A senha deve ter pelo menos 8 caracteres."
+        if not re.search(r"\d", password):
+            return False, "A senha deve conter pelo menos um numero."
+        if not re.search(r"[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ]", password):
+            return False, "A senha deve conter pelo menos uma letra maiuscula."
+        if not re.search(r"[a-záéíóúàâêôãõç]", password):
+            return False, "A senha deve conter pelo menos uma letra minuscula."
+        return True, ""
 
     @staticmethod
     def verify_password(password: str, stored_hash: str) -> bool:

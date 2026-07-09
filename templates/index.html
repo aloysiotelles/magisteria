@@ -6,7 +6,7 @@
   <meta name="description" content="Pesquisa pastoral com curadoria das fontes.">
   <title>MAGISTERIA — Pesquisa pastoral</title>
   <link rel="icon" type="image/png" href="{{ url_for('static', path='/logo-magisteria.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ app_version }}">
 </head>
 <body>
   <div class="page-shell">
@@ -17,6 +17,7 @@
       <button class="utility-button" id="admin-documents-button" type="button">Base documental</button>
       {% endif %}
       <button class="utility-button" id="database-button" type="button">Base de dados</button>
+      <button class="utility-button" id="change-password-button" type="button">Alterar senha</button>
       <button class="utility-button" id="about-button" type="button">Sobre</button>
       <form class="logout-form" method="post" action="/logout"><button class="utility-button" type="submit">Sair</button></form>
     </nav>
@@ -133,6 +134,39 @@
       <p>Concebido e desenvolvido mediante IA (Codex OpenIA) por Aloysio Telles de Moraes Netto - aloysiotmn@hotmail.com - @aloysiotelles</p>
     </div>
   </dialog>
+
+  <dialog class="modal" id="change-password-modal" aria-labelledby="change-password-title">
+    <div class="modal-header">
+      <div>
+        <p class="section-kicker">Segurança</p>
+        <h2 id="change-password-title">Alterar senha</h2>
+      </div>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+    </div>
+    <div class="modal-content">
+      <form id="change-password-form" class="auth-form">
+        <label>
+          Senha atual
+          <input id="current-password" type="password" autocomplete="current-password" required>
+        </label>
+        <label>
+          Nova senha
+          <input id="new-password" type="password" autocomplete="new-password" minlength="8"
+            pattern="(?=.*[a-záéíóúàâêôãõç])(?=.*[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ])(?=.*[0-9]).{8,}"
+            title="Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número." required>
+        </label>
+        <label>
+          Confirmar nova senha
+          <input id="confirm-password" type="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <p class="modal-intro">A nova senha deve ter pelo menos 8 caracteres, uma letra maiúscula, uma minúscula e um número.</p>
+        <div class="actions">
+          <button class="button button-primary" id="change-password-submit" type="submit">Salvar nova senha</button>
+        </div>
+        <p id="change-password-status" class="presentation-status" aria-live="polite"></p>
+      </form>
+    </div>
+  </dialog>
   {% if user.role == "admin" %}
   <dialog class="modal admin-modal" id="stats-modal" aria-labelledby="stats-title">
     <div class="modal-header">
@@ -158,7 +192,7 @@
     </div>
     <div class="modal-content">
       <form id="document-upload-form" class="upload-form">
-        <input id="document-upload" type="file" accept=".pdf,.docx,.txt" required>
+        <input id="document-upload" type="file" accept=".pdf,.docx,.txt,.md,.markdown" required>
         <button class="button button-primary" type="submit">Incluir documento</button>
       </form>
       <p id="admin-documents-summary" class="modal-intro">Consultando documentos...</p>
@@ -169,6 +203,6 @@
     </div>
   </dialog>
   {% endif %}
-  <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+  <script src="{{ url_for('static', path='/app.js') }}?v={{ app_version }}" defer></script>
 </body>
 </html>

@@ -15,7 +15,7 @@ except ImportError:  # Mantem compatibilidade se a dependencia rapida nao estive
     pymupdf = None
 
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".markdown"}
 
 
 def _normalized(text: str) -> str:
@@ -24,7 +24,7 @@ def _normalized(text: str) -> str:
 
 
 def _excluded(path: Path) -> bool:
-    configured = os.getenv("EXCLUDED_DOCUMENTS", "missal romano")
+    configured = os.getenv("EXCLUDED_DOCUMENTS", "")
     patterns = [_normalized(item.strip()) for item in configured.split(",") if item.strip()]
     filename = _normalized(path.name)
     return any(pattern in filename for pattern in patterns)
@@ -38,10 +38,20 @@ class DocumentSection:
 
 
 def discover_documents(directory: Path) -> list[Path]:
+    candidates = [
+        path for path in directory.rglob("*")
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS and not _excluded(path)
+    ]
+    markdown_sources = {
+        (path.parent, path.stem)
+        for path in candidates
+        if path.suffix.lower() in {".md", ".markdown"}
+    }
     return sorted(
         (
-            path for path in directory.rglob("*")
-            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS and not _excluded(path)
+            path for path in candidates
+            if path.suffix.lower() in {".md", ".markdown"}
+            or (path.parent, path.stem) not in markdown_sources
         ),
         key=lambda path: str(path).lower(),
     )
@@ -57,6 +67,8 @@ def load_document(path: Path, base_directory: Path) -> Iterator[DocumentSection]
         yield from _load_docx(path, source)
     elif extension == ".txt":
         yield from _load_txt(path, source)
+    elif extension in {".md", ".markdown"}:
+        yield from _load_markdown(path, source)
 
 
 def _load_pdf(path: Path, source: str) -> Iterator[DocumentSection]:
@@ -93,3 +105,9 @@ def _load_txt(path: Path, source: str) -> Iterator[DocumentSection]:
             return
         except UnicodeDecodeError:
             continue
+
+
+def _load_markdown(path: Path, source: str) -> Iterator[DocumentSection]:
+    text = path.read_text(encoding="utf-8").strip()
+    if text:
+        yield DocumentSection(source, "documento", text)

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import app as application
 from services.answer_service import AnswerService, NOT_FOUND_MESSAGE, format_abnt_references, format_sources
+from services.auth_repository import AuthRepository
 from services.vector_store import LocalVectorStore
 from services.document_loader import load_document
 from services.presentation_service import PresentationService, safe_filename
@@ -83,6 +84,7 @@ def test_editorial_source_order(tmp_path: Path):
         "Suma Teológica.txt": "A caridade une a pessoa a Deus.",
         "Bíblia Ave Maria - Edição de Estudo.txt": "A caridade é paciente.",
         "Compêndio Vaticano II.txt": "A caridade manifesta a comunhão da Igreja.",
+        "A Fé Explicada.txt": "A caridade é uma virtude explicada.",
         "Documento complementar.txt": "A caridade transforma a comunidade.",
     }
     for name, text in fixtures.items():
@@ -93,13 +95,14 @@ def test_editorial_source_order(tmp_path: Path):
     results = store.search_ordered("O que é a caridade?", minimum_score=0)
 
     categories = list(dict.fromkeys(item["categoria"] for item in results))
-    assert categories[:6] == [
+    assert categories[:7] == [
         "Catecismo da Igreja Católica",
-        "Compêndio dos símbolos, definições e declarações",
-        "Compêndio da Doutrina Social da Igreja",
-        "Suma Teológica",
         "Bíblia Ave Maria — citações bíblicas",
         "Compêndio Vaticano II",
+        "Compêndio da Doutrina Social da Igreja",
+        "A Fé Explicada",
+        "Compêndio dos símbolos, definições e declarações",
+        "Suma Teológica",
     ]
     assert categories[-1] == "Demais documentos"
 
@@ -173,10 +176,21 @@ def test_answer_prompt_requires_consolidated_text():
     service = AnswerService("chave", "modelo")
     chunks = [{"source": "Catecismo.txt", "location": "página 1", "text": "Trecho", "score": 1.0}]
 
-    instructions = service._request_arguments("Pergunta", chunks, [])["instructions"]
+    request = service._request_arguments(
+        "Pergunta",
+        chunks,
+        [],
+        [{"source": "joao-paulo-ii-homilias-txt/homilia.txt", "location": "documento", "text": "Amados irmaos."}],
+    )
+    instructions = request["instructions"]
 
     assert "uma única síntese consolidada" in instructions
     assert "Não informe nem liste as fontes no corpo" in instructions
+    assert "A Fé Explicada" in instructions
+
+
+    assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in instructions
+    assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in request["input"]
 
 
 def test_source_references_use_document_specific_locators():
@@ -353,9 +367,67 @@ def test_cover_and_closing_images_are_not_hidden_by_black_shapes():
         assert all(shape.shape_type in {MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.TEXT_BOX} for shape in slide.shapes)
 
 
+def test_user_passwords_must_be_strong_and_can_be_changed(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "auth.sqlite")
+
+    ok, message = repository.create_user("Usuario Teste", "usuario@example.com", "fraca1")
+    assert not ok
+    assert "8 caracteres" in message
+
+    ok, _ = repository.create_user("Usuario Teste", "usuario@example.com", "SenhaForte1")
+    assert ok
+    user = repository.authenticate("usuario@example.com", "SenhaForte1")
+
+    ok, message = repository.change_password(user["id"], "SenhaForte1", "NovaSenha2")
+    assert ok
+    assert "sucesso" in message
+    assert repository.authenticate("usuario@example.com", "NovaSenha2")
+
+
+def test_public_database_consolidates_homilies(monkeypatch):
+    monkeypatch.setattr(
+        application.vector_store,
+        "document_names",
+        lambda: [
+            "Catecismo da Igreja Católica.md",
+            "joao-paulo-ii-homilias-txt/1978_homilia.txt",
+            "joao-paulo-ii-homilias-txt/1979_homilia.txt",
+        ],
+    )
+    monkeypatch.setattr(application.auth_repository, "inactive_sources", lambda: ())
+
+    names = application.public_document_names()
+
+    assert names.count("Homilias de São João Paulo II") == 1
+    assert not any("joao-paulo-ii-homilias-txt" in name for name in names)
+
+
 def test_password_protects_application_and_health_is_public():
     client = TestClient(application.app)
     assert client.get("/health").status_code == 200
     assert client.get("/", follow_redirects=False).headers["location"] == "/login"
     assert client.post("/login", data={"email": "Admin", "senha": "3510"}).status_code == 200
     assert client.get("/").status_code == 200
+
+
+def test_admin_can_clear_document_base(monkeypatch, tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    (documents / "antigo.pdf").write_bytes(b"%PDF-1.4")
+    (documents / "antigo.md").write_text("texto antigo", encoding="utf-8")
+    (documents / "manter.png").write_bytes(b"imagem")
+
+    async def fake_indexing():
+        return {"documentos": 0, "trechos": 0}
+
+    monkeypatch.setattr(application.settings, "DOCUMENTS_DIR", documents)
+    monkeypatch.setattr(application, "perform_indexing", fake_indexing)
+
+    client = authenticated_client()
+    response = client.post("/admin/base-documental/limpar")
+
+    assert response.status_code == 200
+    assert sorted(response.json()["removidos"]) == ["antigo.md", "antigo.pdf"]
+    assert not (documents / "antigo.pdf").exists()
+    assert not (documents / "antigo.md").exists()
+    assert (documents / "manter.png").exists()

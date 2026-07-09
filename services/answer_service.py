@@ -8,7 +8,9 @@ from openai import AsyncOpenAI
 
 ABSOLUTE_RULE = (
     "Responda somente com base nos trechos fornecidos. Se os trechos não forem suficientes, "
-    "diga que não encontrou essa informação nos documentos cadastrados."
+    "diga que não encontrou essa informação nos documentos cadastrados. "
+    "Quando a evidência estiver fraca ou parecer insuficiente, dê preferência a aprofundar a resposta com base em A Fé Explicada, "
+    "se houver trechos dessa obra entre os cadastrados, antes de concluir que a base não contém resposta."
 )
 NOT_FOUND_MESSAGE = "Não encontrei essa informação nos documentos cadastrados."
 
@@ -19,24 +21,36 @@ class AnswerService:
         self.model = model
         self.client = AsyncOpenAI(api_key=api_key) if api_key else None
 
-    async def answer(self, question: str, chunks: list[dict], history: list[dict] | None = None) -> str:
+    async def answer(
+        self,
+        question: str,
+        chunks: list[dict],
+        history: list[dict] | None = None,
+        style_chunks: list[dict] | None = None,
+    ) -> str:
         if not chunks:
             return NOT_FOUND_MESSAGE
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
 
-        response = await self.client.responses.create(**self._request_arguments(question, chunks, history or []))
+        response = await self.client.responses.create(**self._request_arguments(question, chunks, history or [], style_chunks or []))
         answer = (response.output_text or "").strip()
         return answer or NOT_FOUND_MESSAGE
 
-    async def stream_answer(self, question: str, chunks: list[dict], history: list[dict] | None = None):
+    async def stream_answer(
+        self,
+        question: str,
+        chunks: list[dict],
+        history: list[dict] | None = None,
+        style_chunks: list[dict] | None = None,
+    ):
         if not chunks:
             yield NOT_FOUND_MESSAGE
             return
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
 
-        base_arguments = self._request_arguments(question, chunks, history or [])
+        base_arguments = self._request_arguments(question, chunks, history or [], style_chunks or [])
         previous_response_id = None
 
         for continuation in range(3):
@@ -68,7 +82,7 @@ class AnswerService:
 
         raise RuntimeError("A resposta permaneceu incompleta após as tentativas de continuação.")
 
-    def _request_arguments(self, question: str, chunks: list[dict], history: list[dict]) -> dict:
+    def _request_arguments(self, question: str, chunks: list[dict], history: list[dict], style_chunks: list[dict] | None = None) -> dict:
         context = "\n\n".join(
             f"[ORDEM {chunk.get('ordem', 1)} — {chunk.get('categoria', 'Documento')} — "
             f"TRECHO {number} — {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
@@ -78,6 +92,10 @@ class AnswerService:
             f"USUÁRIO: {turn.get('pergunta', '')}\nMAGISTERIA: {turn.get('resposta', '')}"
             for turn in history[-3:]
         ) or "Sem conversa anterior."
+        style_context = "\n\n".join(
+            f"[AMOSTRA DE ESTILO {number} - {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
+            for number, chunk in enumerate(style_chunks or [], start=1)
+        ) or "Sem amostras especificas de homilias para esta pergunta."
         return {
             "model": self.model,
             "instructions": (
@@ -86,6 +104,9 @@ class AnswerService:
                 "Não use memória, conhecimento geral, inferências externas ou pesquisa na internet. "
                 "Não mencione fontes que não estejam nos trechos. "
                 "Escreva em português brasileiro, com tom acolhedor, sereno e próximo, sem parecer mecânico. "
+                "Quando houver AMOSTRAS DE ESTILO DAS HOMILIAS, aproxime o ritmo, a clareza pastoral, o apelo espiritual "
+                "e a forma exortativa dessas homilias. Use essas amostras apenas como modelo de escrita; não retire delas "
+                "afirmações factuais para responder se elas não estiverem também apoiadas nos TRECHOS CADASTRADOS. "
                 "Comece diretamente pela resposta. Explique termos religiosos com simplicidade quando necessário. "
                 "Prefira parágrafos curtos e use uma lista apenas quando ela realmente facilitar a compreensão. "
                 "Use texto simples, sem Markdown, asteriscos ou títulos com cerquilhas. "
@@ -106,6 +127,7 @@ class AnswerService:
             "input": (
                 f"HISTÓRICO DA CONVERSA:\n{conversation}\n\n"
                 f"PERGUNTA ATUAL:\n{question}\n\nTRECHOS CADASTRADOS EM ORDEM EDITORIAL:\n{context}"
+                f"\n\nAMOSTRAS DE ESTILO DAS HOMILIAS:\n{style_context}"
             ),
             "max_output_tokens": 2400,
         }
@@ -192,6 +214,8 @@ def format_abnt_references(chunks: list[dict]) -> str:
                 "CONCÍLIO VATICANO II. Documentos do Concílio Vaticano II. "
                 f"[S. l.: s. n.], [s. d.]. {locator}."
             )
+        elif "a fe explicada" in normalized or "fe explicada" in normalized:
+            entry = f"TRESE, Leo J. A Fé Explicada. [S. l.: s. n.], [s. d.]. {locator}."
         elif "suma teológica" in normalized:
             entry = f"TOMÁS DE AQUINO. Suma Teológica. [S. l.: s. n.], [s. d.]. {locator}."
         else:

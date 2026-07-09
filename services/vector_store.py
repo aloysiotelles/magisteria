@@ -25,11 +25,12 @@ SOURCE_HINTS = {
 }
 ORDERED_SOURCES = (
     ("Catecismo da Igreja Católica", ("catecismo",), 5),
-    ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 2),
-    ("Compêndio da Doutrina Social da Igreja", ("doutrina-social", "doutrina social"), 2),
-    ("Suma Teológica", ("suma teologica", "suma-teologica", "suma"), 2),
     ("Bíblia Ave Maria — citações bíblicas", ("biblia ave maria", "biblia"), 4),
     ("Compêndio Vaticano II", ("compendio vaticano ii", "vaticano ii"), 3),
+    ("Compêndio da Doutrina Social da Igreja", ("doutrina-social", "doutrina social"), 2),
+    ("A Fé Explicada", ("a fe explicada", "fe explicada"), 2),
+    ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 2),
+    ("Suma Teológica", ("suma teologica", "suma-teologica", "suma"), 2),
 )
 BIBLE_QUERY_EXPANSIONS = {
     "caridade": {"amor", "amar", "amou"}, "sacramento": {"batismo", "eucaristia", "ceia"},

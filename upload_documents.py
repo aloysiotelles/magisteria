@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--url", default="https://magisteria-production.up.railway.app")
     parser.add_argument("--senha", default="DIVINA")
     parser.add_argument("--documentos", type=Path, default=Path(__file__).parent / "Documentos")
+    parser.add_argument("--substituir", action="store_true", help="Apaga a base remota antes de enviar os arquivos.")
     args = parser.parse_args()
     base_url = args.url.rstrip("/")
     opener = build_opener(HTTPCookieProcessor(CookieJar()))
@@ -51,11 +52,14 @@ def main() -> None:
                 raise
             print("Aguardando o novo deploy ficar disponivel...")
             time.sleep(10)
+    if args.substituir:
+        result = json.loads(request(opener, f"{base_url}/admin/base-documental/limpar", data=b"{}", headers={"Content-Type": "application/json"}))
+        print(f"Base remota limpa: {len(result.get('removidos', []))} arquivo(s) removido(s).")
+
     files = sorted(
         path for path in args.documentos.rglob("*")
         if path.is_file()
-        and path.suffix.lower() in {".pdf", ".docx", ".txt"}
-        and "missal romano" not in normalized(path.name)
+        and path.suffix.lower() in {".txt", ".md", ".markdown"}
     )
     print(f"Enviando {len(files)} documentos...")
     for position, path in enumerate(files, 1):

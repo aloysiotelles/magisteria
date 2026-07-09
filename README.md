@@ -6,7 +6,7 @@ Aplicativo web de pesquisa pastoral em uma base documental fechada. O sistema l�
 
 A versão 0.4.4 reduz o tempo da busca local com metadados preparados em memória, seleção dos melhores candidatos sem ordenar toda a base e análise bíblica por vetores já indexados. A relevância é verificada antes da prioridade editorial, evitando que uma fonte preferencial seja apresentada quando não trata da pergunta.
 
-- aceita arquivos PDF, DOCX e TXT;
+- aceita arquivos PDF, DOCX, TXT e Markdown;
 - mantém um índice vetorial local e persistente;
 - atualiza automaticamente a base sempre que o aplicativo é iniciado;
 - mostra percentual, documento atual e estimativa de tempo durante a atualização;
@@ -38,9 +38,11 @@ O usuário final não precisa digitar comandos no terminal.
 
 ## Como cadastrar documentos
 
-1. Copie arquivos `.pdf`, `.docx` ou `.txt` para a pasta `Documentos`.
+1. Copie arquivos `.pdf`, `.docx`, `.txt`, `.md` ou `.markdown` para a pasta `Documentos`.
 2. Inicie ou reinicie o MAGISTERIA.
 3. Verifique no topo do formulário quantos documentos e trechos foram indexados.
+
+Se existir um arquivo `.md` com o mesmo nome-base de um PDF, o Markdown tem prioridade e o PDF é ignorado na indexação. Isso permite manter a versão leve da base sem perder compatibilidade com a pasta antiga.
 
 Arquivos corrompidos ou sem texto legível são ignorados e apresentados no retorno de status. PDFs compostos somente por imagens precisam passar por OCR antes de serem cadastrados.
 
@@ -121,7 +123,15 @@ Nao defina `PORT`: o Railway injeta essa variavel automaticamente. Nunca envie o
 
 Adicione um Volume ao servico e use `/data` como caminho de montagem. Os documentos devem ficar em `/data/Documentos`; o indice sera criado em `/data/banco_vetorial` quando o container iniciar.
 
-Os PDFs nao fazem parte da imagem Docker nem do repositorio. Isso evita publicar material privado ou protegido e mantem a imagem pequena. Antes de liberar o servico, copie os arquivos autorizados para o diretorio `Documentos` do Volume e reinicie o deploy. Confirme o carregamento em `GET /status`.
+Os PDFs nao fazem parte da imagem Docker nem do repositorio. Isso evita publicar material privado ou protegido e mantem a imagem pequena. Antes de liberar o servico, copie os arquivos autorizados para o diretorio `Documentos` do Volume e reinicie o deploy. Para esta nova base, prefira enviar os arquivos `.md` gerados a partir dos PDFs, porque eles reduzem bastante o peso do volume e mantêm a indexacao local funcionando do mesmo jeito. Confirme o carregamento em `GET /status`.
+
+Para substituir toda a base remota por arquivos de texto/Markdown da pasta local `Documentos`, use:
+
+```powershell
+python upload_documents.py --substituir
+```
+
+Esse comando apaga os documentos antigos do Volume do Railway, envia apenas `.md`, `.markdown` e `.txt`, e reindexa a base ao final.
 
 > Um servico com Volume deve usar uma unica replica, porque o indice JSON e um arquivo local compartilhado pela aplicacao.
 

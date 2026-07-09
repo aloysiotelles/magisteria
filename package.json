@@ -1,6 +1,6 @@
 {
   "name": "magister-ia",
-  "version": "0.5.1",
+  "version": "0.5.9",
   "private": true,
   "description": "Comandos auxiliares para a aplicacao FastAPI MAGISTERIA",
   "scripts": {

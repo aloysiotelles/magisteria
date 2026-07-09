@@ -13,8 +13,16 @@ const progressPercent = document.querySelector("#progress-percent");
 const progressDetail = document.querySelector("#progress-detail");
 const progressEta = document.querySelector("#progress-eta");
 const databaseButton = document.querySelector("#database-button");
+const changePasswordButton = document.querySelector("#change-password-button");
 const aboutButton = document.querySelector("#about-button");
 const databaseModal = document.querySelector("#database-modal");
+const changePasswordModal = document.querySelector("#change-password-modal");
+const changePasswordForm = document.querySelector("#change-password-form");
+const currentPassword = document.querySelector("#current-password");
+const newPassword = document.querySelector("#new-password");
+const confirmPassword = document.querySelector("#confirm-password");
+const changePasswordSubmit = document.querySelector("#change-password-submit");
+const changePasswordStatus = document.querySelector("#change-password-status");
 const aboutModal = document.querySelector("#about-modal");
 const databaseList = document.querySelector("#database-list");
 const databaseSummary = document.querySelector("#database-summary");
@@ -58,10 +66,25 @@ function clearMessage() {
   messagePanel.textContent = "";
 }
 
+function readableErrorMessage(detail) {
+  if (!detail) return "Ocorreu um erro inesperado.";
+  if (typeof detail === "string") {
+    return detail === "Field required" ? "Preencha todos os campos obrigatórios." : detail;
+  }
+  if (Array.isArray(detail)) {
+    if (detail.some(item => item?.msg === "Field required")) {
+      return "Preencha todos os campos obrigatórios.";
+    }
+    return detail.map(item => item?.msg || item?.message || JSON.stringify(item)).join(" ");
+  }
+  const message = detail.msg || detail.message || JSON.stringify(detail);
+  return message === "Field required" ? "Preencha todos os campos obrigatórios." : message;
+}
+
 async function request(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Ocorreu um erro inesperado.");
+  if (!response.ok) throw new Error(readableErrorMessage(data.detail));
   return data;
 }
 
@@ -194,6 +217,40 @@ databaseButton.addEventListener("click", async () => {
 });
 
 aboutButton.addEventListener("click", () => aboutModal.showModal());
+
+changePasswordButton.addEventListener("click", () => {
+  changePasswordForm.reset();
+  changePasswordStatus.textContent = "";
+  changePasswordModal.showModal();
+});
+
+changePasswordForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  changePasswordStatus.textContent = "";
+  if (newPassword.value !== confirmPassword.value) {
+    changePasswordStatus.textContent = "A confirmação da nova senha não confere.";
+    return;
+  }
+  changePasswordSubmit.disabled = true;
+  try {
+    const data = await request("/alterar-senha", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        senha_atual: currentPassword.value,
+        nova_senha: newPassword.value,
+        confirmar_senha: confirmPassword.value,
+      }),
+    });
+    changePasswordForm.reset();
+    changePasswordModal.close();
+    clearMessage();
+  } catch (error) {
+    changePasswordStatus.textContent = error.message;
+  } finally {
+    changePasswordSubmit.disabled = false;
+  }
+});
 
 if (statsButton) {
   statsButton.addEventListener("click", async () => {

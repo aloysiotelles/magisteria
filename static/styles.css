@@ -162,6 +162,10 @@ textarea::placeholder { color: #929990; }
 .about-content { display: flex; align-items: center; gap: 20px; line-height: 1.7; }
 .about-content p { margin: 0; }
 .about-logo { width: 92px; height: 92px; flex: 0 0 auto; object-fit: cover; border-radius: 50%; }
+.auth-form { display: grid; gap: 14px; }
+.auth-form label { display: grid; gap: 7px; color: var(--forest); font-size: .84rem; font-weight: 700; }
+.auth-form input { width: 100%; padding: 12px 13px; border: 1px solid #d8d2c2; border-radius: 10px; background: white; color: var(--ink); font: inherit; }
+.auth-form input:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 4px rgba(189, 133, 21, .10); }
 .admin-modal { width: min(980px, calc(100% - 30px)); }
 .table-wrap { overflow-x: auto; border: 1px solid #e5dfd0; border-radius: 9px; background: #fffdf8; }
 .admin-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
