@@ -17,11 +17,48 @@ TOKEN_PATTERN = re.compile(r"[a-z0-9à-ÿ]{2,}", re.IGNORECASE)
 QUERY_STOPWORDS = {
     "que", "como", "qual", "quais", "uma", "uns", "das", "dos", "para", "por", "com",
     "sem", "sobre", "segundo", "partir", "ensina", "ensinam", "igreja", "documento", "documentos",
+    "diz", "dizem", "fala", "falam", "trata", "tratam", "explique", "explica", "catolica", "catolico",
+    "compendio", "fonte", "obra", "livro",
 }
 SOURCE_HINTS = {
-    "catecismo": ("catecismo",), "biblia": ("biblia",), "missal": ("missal",),
-    "suma": ("suma teologica",), "doutrina social": ("doutrina social",),
-    "d sistema": ("simbolos definicoes",),
+    "catecismo": ("catecismo",), "cic": ("catecismo",),
+    "biblia": ("biblia",), "sagrada escritura": ("biblia",), "missal": ("missal",),
+    "suma": ("suma teologica",), "doutrina social": ("doutrina social", "doutrina-social"),
+    "compendio da doutrina social": ("doutrina social", "doutrina-social"),
+    "fe explicada": ("a fe explicada", "fe explicada"),
+    "a fe": ("a fe explicada", "fe explicada"),
+    "compendio de simbolos": ("simbolos", "definicoes", "declaracoes-de-fe-e-moral"),
+    "simbolos": ("simbolos", "definicoes", "declaracoes-de-fe-e-moral"),
+    "denzinger": ("simbolos", "definicoes", "declaracoes-de-fe-e-moral"),
+    "d sistema": ("simbolos definicoes", "declaracoes-de-fe-e-moral"),
+}
+QUERY_EXPANSIONS = {
+    "matrimonio": {
+        "casamento", "conjugal", "conjuges", "esposos", "esposo", "esposa",
+        "matrimonial", "indissolubilidade", "fecundidade", "familia", "consentimento",
+        "sacramento", "uniao",
+    },
+    "casamento": {
+        "matrimonio", "conjugal", "conjuges", "esposos", "matrimonial",
+        "indissolubilidade", "fecundidade", "familia", "consentimento", "sacramento",
+    },
+    "conjuges": {"matrimonio", "casamento", "esposos", "conjugal", "familia"},
+    "esposos": {"matrimonio", "casamento", "conjuges", "conjugal", "familia"},
+    "familia": {"matrimonio", "casamento", "conjuges", "esposos", "filhos"},
+    "divorcio": {"matrimonio", "casamento", "indissolubilidade", "conjuges"},
+}
+TOPIC_REFERENCE_RANGES = {
+    "matrimonio": ((1601, 1605, 1.25), (1606, 1666, 0.7), (2360, 2379, 0.35), (2201, 2233, 0.25)),
+    "casamento": ((1601, 1605, 1.25), (1606, 1666, 0.7), (2360, 2379, 0.35), (2201, 2233, 0.25)),
+    "conjuges": ((1601, 1605, 0.9), (1606, 1666, 0.55), (2360, 2379, 0.35)),
+    "esposos": ((1601, 1605, 0.9), (1606, 1666, 0.55), (2360, 2379, 0.35)),
+    "familia": ((2201, 2233, 0.55), (1601, 1605, 0.35), (1606, 1666, 0.25)),
+    "dignidade": ((105, 159, 0.75), (132, 134, 0.95), (1700, 1706, 0.65), (1929, 1933, 0.55)),
+    "humana": ((105, 159, 0.35), (132, 134, 0.55), (1700, 1706, 0.35), (1929, 1933, 0.3)),
+    "trabalho": ((255, 322, 0.85), (270, 275, 1.0), (2427, 2436, 0.55)),
+    "solidariedade": ((192, 196, 0.95), (332, 333, 0.5), (1939, 1942, 0.55)),
+    "subsidiariedade": ((185, 188, 0.95),),
+    "comum": ((164, 170, 0.7), (1905, 1912, 0.55)),
 }
 ORDERED_SOURCES = (
     ("Catecismo da Igreja Católica", ("catecismo",), 5),
@@ -44,6 +81,15 @@ BIBLE_REFERENCE_PATTERN = re.compile(
     r"Hb|Tg|1Pd|2Pd|1Jo|2Jo|3Jo|Jd|Ap)\s*\d{1,3}\s*,\s*\d{1,3}(?:[-–.]\d{1,3})*",
     re.IGNORECASE,
 )
+INDEXED_SOURCE_HINTS = (
+    "catecismo",
+    "doutrina social",
+    "compendio-da-doutrina-social",
+    "simbolos definicoes",
+    "declaracoes-de-fe-e-moral",
+    "a fe explicada",
+)
+SYSTEMATIC_INDEX_CODE_PATTERN = re.compile(r"\b[A-Z]:\d+[a-z]{0,3}(?:\d+)?\b")
 
 
 class LocalVectorStore:
@@ -137,41 +183,70 @@ class LocalVectorStore:
             db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
         return self.status()
 
-    def _candidate_rows(self, query: str, limit: int = 300) -> list[dict]:
-        terms = [term for term in TOKEN_PATTERN.findall(self._normalize(query)) if term not in QUERY_STOPWORDS and len(term) > 2]
+    def _query_terms(self, query: str, preferred: tuple[str, ...] = ()) -> tuple[set[str], set[str]]:
+        terms = {
+            term for term in TOKEN_PATTERN.findall(self._normalize(query))
+            if term not in QUERY_STOPWORDS and len(term) > 2
+        }
+        if preferred:
+            terms -= {
+                term
+                for hint in preferred
+                for term in TOKEN_PATTERN.findall(self._normalize(hint))
+            }
         expanded = set(terms)
         for term in terms:
+            expanded.update(QUERY_EXPANSIONS.get(term, set()))
             expanded.update(BIBLE_QUERY_EXPANSIONS.get(term, set()))
+        return terms, expanded
+
+    def _candidate_rows(self, query: str, limit: int | None = None, preferred: tuple[str, ...] = ()) -> list[dict]:
+        _, expanded = self._query_terms(query, preferred)
         if not expanded:
             return []
-        expression = " OR ".join(f'"{term}"' for term in sorted(expanded))
+        limit = limit or (1200 if preferred else 2000)
+        expression = " OR ".join(f"{term}*" for term in sorted(expanded))
         with self._connect() as db:
             rows = db.execute(
                 "SELECT id,source,location,text,bm25(chunks) rank FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
                 (expression, limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        candidates = []
+        for position, row in enumerate(rows, 1):
+            item = dict(row)
+            item["fts_position"] = position
+            candidates.append(item)
+        return candidates
 
     def search(self, query: str, limit: int = 6, minimum_score: float = 0.08,
                source_filter: tuple[str, ...] | None = None, excluded_sources: tuple[str, ...] = ()) -> list[dict]:
         normalized_query = self._normalize(query)
-        terms = {t for t in TOKEN_PATTERN.findall(normalized_query) if t not in QUERY_STOPWORDS and len(t) > 2}
         preferred = source_filter or self._preferred_sources(normalized_query)
-        if preferred:
-            terms -= {t for hint in preferred for t in TOKEN_PATTERN.findall(hint)}
+        terms, expanded_terms = self._query_terms(query, preferred)
+        index_guidance = self._index_guidance(query, preferred, excluded_sources)
         ranked = []
-        for row in self._candidate_rows(query):
+        for row in self._candidate_rows(query, preferred=preferred):
             source_norm = self._normalize(row["source"])
-            if preferred and not any(hint in source_norm for hint in preferred):
+            if preferred and not self._source_matches(source_norm, preferred):
                 continue
             if excluded_sources and any(hint in source_norm for hint in excluded_sources):
                 continue
-            text_terms = set(TOKEN_PATTERN.findall(self._normalize(row["text"])))
+            text_norm = self._normalize(row["text"])
+            text_terms = set(TOKEN_PATTERN.findall(text_norm))
             coverage = len(terms & text_terms) / max(len(terms), 1)
-            if coverage < minimum_score:
+            expanded_hits = len(expanded_terms & text_terms)
+            if coverage < minimum_score and expanded_hits == 0:
                 continue
-            ranked.append({**row, "score": round(coverage + (0.18 if preferred else 0), 4)})
-        ranked.sort(key=lambda item: item["score"], reverse=True)
+            frequency = sum(text_norm.count(term) for term in expanded_terms)
+            fts_bonus = max(0, (320 - int(row.get("fts_position", 320))) / 320) * 0.35
+            heading_bonus = 0.12 if any(term in text_norm[:260] for term in terms | expanded_terms) else 0
+            source_bonus = 0.22 if preferred else 0
+            anchor_bonus = self._topic_anchor_bonus(terms, self._paragraph_numbers(text_norm))
+            index_bonus = self._index_guidance_bonus(source_norm, text_norm, index_guidance)
+            note_penalty = self._note_fragment_penalty(text_norm)
+            score = coverage + min(frequency, 10) * 0.035 + fts_bonus + heading_bonus + source_bonus + anchor_bonus + index_bonus - note_penalty
+            ranked.append({**row, "score": round(score, 4)})
+        ranked.sort(key=lambda item: (item["score"], -int(item.get("fts_position", 9999))), reverse=True)
         return self._diversify(ranked, limit, bool(preferred))
 
     def search_ordered(
@@ -208,10 +283,159 @@ class LocalVectorStore:
             refs = []
             if "catecismo" in normalized:
                 refs = re.findall(r"(?:^|\n)\s*(\d{1,4})\.\s", text)
+                if not refs:
+                    refs = re.findall(r"\b(1[0-9]{3}|2[0-8][0-9]{2})\.\s", text)
             elif "biblia" in normalized:
                 refs = [re.sub(r"\s*,\s*", ",", match.group()) for match in BIBLE_REFERENCE_PATTERN.finditer(text)]
             item["referencias"] = list(dict.fromkeys(refs))[:12]
         return results
+
+    def _index_guidance(
+        self,
+        query: str,
+        preferred: tuple[str, ...] = (),
+        excluded_sources: tuple[str, ...] = (),
+    ) -> dict[str, dict[str, set[str]]]:
+        """Consulta primeiro os indices das obras que possuem mapa interno.
+
+        Alguns PDFs convertidos ficam com paginas fora de ordem. Por isso esta etapa nao
+        tenta confiar na posicao fisica do arquivo: ela procura linhas de indice, extrai
+        referencias internas e depois usa essas referencias para favorecer os trechos
+        doutrinais correspondentes.
+        """
+        terms, expanded_terms = self._query_terms(query, preferred)
+        lookup_terms = terms | expanded_terms
+        if not lookup_terms:
+            return {}
+        expression = " OR ".join(f"{term}*" for term in sorted(lookup_terms))
+        guidance: dict[str, dict[str, set[str]]] = {}
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT source,location,text,bm25(chunks) rank FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT 700",
+                (expression,),
+            ).fetchall()
+
+        for row in rows:
+            source = row["source"]
+            source_norm = self._normalize(source)
+            if not self._is_indexed_source(source_norm):
+                continue
+            if preferred and not self._source_matches(source_norm, preferred):
+                continue
+            if excluded_sources and any(hint in source_norm for hint in excluded_sources):
+                continue
+            text = row["text"]
+            if not self._looks_like_index_chunk(source_norm, text):
+                continue
+            item = guidance.setdefault(source_norm, {"paragraphs": set(), "pages": set(), "codes": set(), "headings": set()})
+            for line in text.splitlines():
+                line_norm = self._normalize(line)
+                if not line_norm.strip() or not any(term in line_norm for term in lookup_terms):
+                    continue
+                item["paragraphs"].update(self._extract_index_paragraphs(line_norm))
+                item["pages"].update(self._extract_index_pages(source_norm, line_norm))
+                item["codes"].update(code.lower() for code in SYSTEMATIC_INDEX_CODE_PATTERN.findall(line))
+                heading = re.sub(r"\.{2,}.*$", "", line_norm)
+                heading = re.sub(r"\b\d{1,4}[a-z]?\b", "", heading)
+                heading = re.sub(r"\s+", " ", heading).strip(" .;:-")
+                if 4 <= len(heading) <= 90:
+                    item["headings"].add(heading)
+        return guidance
+
+    @staticmethod
+    def _extract_index_paragraphs(line_norm: str) -> set[str]:
+        references: set[str] = set()
+        for start, end in re.findall(r"\b(?:a)?(\d{3,4})\s*[-–]\s*(?:a)?(\d{3,4})", line_norm):
+            start_number, end_number = int(start), int(end)
+            if 100 <= start_number <= end_number <= 9999 and end_number - start_number <= 80:
+                references.update(str(value) for value in range(start_number, end_number + 1))
+        for value in re.findall(r"\b(?:a)?(\d{3,4})(?:s|[a-z])?\b", line_norm):
+            number = int(value)
+            if 100 <= number <= 9999:
+                references.add(str(number))
+        return references
+
+    @staticmethod
+    def _extract_index_pages(source_norm: str, line_norm: str) -> set[str]:
+        if "a fe explicada" not in source_norm:
+            return set()
+        pages = set()
+        dotted = re.search(r"\.{2,}\s*(\d{1,3})\s*$", line_norm)
+        if dotted:
+            pages.add(dotted.group(1))
+        return pages
+
+    @classmethod
+    def _is_indexed_source(cls, source_norm: str) -> bool:
+        return cls._source_matches(source_norm, INDEXED_SOURCE_HINTS)
+
+    @classmethod
+    def _source_matches(cls, source_norm: str, hints: tuple[str, ...]) -> bool:
+        source_loose = re.sub(r"[-_]+", " ", source_norm)
+        return any(cls._normalize(hint) in source_norm or cls._normalize(hint) in source_loose for hint in hints)
+
+    @classmethod
+    def _looks_like_index_chunk(cls, source_norm: str, text: str) -> bool:
+        text_norm = cls._normalize(text)
+        if "indice" in text_norm or "sumario" in text_norm:
+            return True
+        if "a fe explicada" in source_norm and re.search(r"\.{4,}\s*\d{1,3}\b", text_norm):
+            return True
+        if "simbolos" in source_norm or "declaracoes-de-fe-e-moral" in source_norm:
+            if "indice sistematico" in text_norm:
+                return True
+            if len(SYSTEMATIC_INDEX_CODE_PATTERN.findall(text)) >= 2:
+                return True
+            if re.search(r"\bcf\.\s*[A-Z]:\d", text):
+                return True
+        return False
+
+    @staticmethod
+    def _index_guidance_bonus(source_norm: str, text_norm: str, guidance: dict[str, dict[str, set[str]]]) -> float:
+        item = guidance.get(source_norm)
+        if not item:
+            return 0.0
+        bonus = 0.0
+        paragraph_numbers = set(re.findall(r"\b(\d{3,4})\.\s", text_norm))
+        if item["paragraphs"] & paragraph_numbers:
+            bonus += 0.9
+        elif any(f"{reference}." in text_norm[:1200] for reference in item["paragraphs"]):
+            bonus += 0.55
+        if item["pages"] and any(
+            re.search(rf"(?:pagina|\[p\.)\s*{re.escape(page)}\b", text_norm)
+            for page in item["pages"]
+        ):
+            bonus += 0.75
+        codes = {code.lower() for code in SYSTEMATIC_INDEX_CODE_PATTERN.findall(text_norm.upper())}
+        if item["codes"] & codes:
+            bonus += 0.65
+        if item["headings"] and any(heading and heading in text_norm[:900] for heading in item["headings"]):
+            bonus += 0.25
+        return min(bonus, 1.35)
+
+    @staticmethod
+    def _note_fragment_penalty(text_norm: str) -> float:
+        opening = text_norm[:360]
+        if "## pagina" in opening and ("aas " in opening or opening.count("cf.") >= 2 or len(re.findall(r"\[\d{2,4}\]", opening)) >= 2):
+            return 0.45
+        return 0.0
+
+    @staticmethod
+    def _paragraph_numbers(normalized_text: str) -> set[int]:
+        return {
+            int(value)
+            for value in re.findall(r"(?:^|\n|\s)(\d{1,4})\.\s", normalized_text)
+            if value.isdigit()
+        }
+
+    @staticmethod
+    def _topic_anchor_bonus(terms: set[str], paragraph_numbers: set[int]) -> float:
+        bonus = 0.0
+        for term in terms:
+            for start, end, value in TOPIC_REFERENCE_RANGES.get(term, ()):
+                if any(start <= number <= end for number in paragraph_numbers):
+                    bonus = max(bonus, value)
+        return bonus
 
     def status(self) -> dict:
         with self._connect() as db:

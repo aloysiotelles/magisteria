@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
 
 from openai import AsyncOpenAI
@@ -16,9 +17,10 @@ NOT_FOUND_MESSAGE = "Não encontrei essa informação nos documentos cadastrados
 
 
 class AnswerService:
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, review_model: str | None = None):
         self.api_key = api_key
         self.model = model
+        self.review_model = review_model or model
         self.client = AsyncOpenAI(api_key=api_key) if api_key else None
 
     async def answer(
@@ -28,14 +30,36 @@ class AnswerService:
         history: list[dict] | None = None,
         style_chunks: list[dict] | None = None,
     ) -> str:
+        result = await self.answer_with_review(question, chunks, history, style_chunks)
+        return result["resposta"]
+
+    async def answer_with_review(
+        self,
+        question: str,
+        chunks: list[dict],
+        history: list[dict] | None = None,
+        style_chunks: list[dict] | None = None,
+    ) -> dict:
         if not chunks:
-            return NOT_FOUND_MESSAGE
+            return {"resposta": NOT_FOUND_MESSAGE, "status_revisao": "block", "motivo_revisao": "Sem base documental suficiente."}
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
 
         response = await self.client.responses.create(**self._request_arguments(question, chunks, history or [], style_chunks or []))
         answer = (response.output_text or "").strip()
-        return answer or NOT_FOUND_MESSAGE
+        if not answer:
+            return {"resposta": NOT_FOUND_MESSAGE, "status_revisao": "block", "motivo_revisao": "Resposta vazia do modelo principal."}
+        review = await self.review_answer(question, answer, chunks, history or [], style_chunks or [])
+        action = review.get("action", "approve")
+        if action == "approve":
+            return {"resposta": answer, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
+        if action == "rewrite":
+            fallback = review.get("suggested_answer", "").strip()
+            return {"resposta": fallback or NOT_FOUND_MESSAGE, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
+        fallback = review.get("suggested_answer", "").strip()
+        if fallback:
+            return {"resposta": fallback, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
+        return {"resposta": NOT_FOUND_MESSAGE, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
 
     async def stream_answer(
         self,
@@ -81,6 +105,102 @@ class AnswerService:
                 raise RuntimeError("A resposta foi interrompida sem identificador para continuação.")
 
         raise RuntimeError("A resposta permaneceu incompleta após as tentativas de continuação.")
+
+    async def review_answer(
+        self,
+        question: str,
+        answer: str,
+        chunks: list[dict],
+        history: list[dict] | None = None,
+        style_chunks: list[dict] | None = None,
+    ) -> dict:
+        if not chunks:
+            return {"approved": False, "reason": "Sem base documental suficiente."}
+        if not self.api_key:
+            raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
+
+        context = "\n\n".join(
+            f"[ORDEM {chunk.get('ordem', 1)} — {chunk.get('categoria', 'Documento')} — TRECHO {number} — {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
+            for number, chunk in enumerate(chunks, start=1)
+        )
+        conversation = "\n\n".join(
+            f"USUÁRIO: {turn.get('pergunta', '')}\nMAGISTERIA: {turn.get('resposta', '')}"
+            for turn in (history or [])[-3:]
+        ) or "Sem conversa anterior."
+        style_context = "\n\n".join(
+            f"[AMOSTRA DE ESTILO {number} - {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
+            for number, chunk in enumerate(style_chunks or [], start=1)
+        ) or "Sem amostras especificas de homilias para esta pergunta."
+
+        review_prompt = (
+            "Você é um verificador de respostas documentais. "
+            "Seu trabalho é avaliar se a resposta abaixo está apoiada nos trechos fornecidos. "
+            "Não use conhecimento externo. Não acrescente conteúdo novo. "
+            "Responda apenas em JSON válido com as chaves: action (string), reason (string), suggested_answer (string). "
+            "Se não houver problema claro, prefira action='approve'. "
+            "Use action='rewrite' quando a ideia central estiver correta, mas a formulação precise ser mais cautelosa ou breve. "
+            "Use action='block' somente quando houver extrapolação inequívoca, contradição, citação indevida, erro factual ou excesso de confiança evidente. "
+            "Nesse caso, suggested_answer deve conter uma recusa educada ou uma versão muito conservadora."
+        )
+        response = await self.client.responses.create(
+            model=self.review_model,
+            instructions=review_prompt,
+            input=(
+                f"PERGUNTA:\n{question}\n\n"
+                f"HISTÓRICO:\n{conversation}\n\n"
+                f"TRECHOS:\n{context}\n\n"
+                f"AMOSTRAS DE ESTILO:\n{style_context}\n\n"
+                f"RESPOSTA A VALIDAR:\n{answer}"
+            ),
+            max_output_tokens=700,
+        )
+        parsed = self._parse_review_response((response.output_text or "").strip())
+        if parsed is None:
+            return {"action": "block", "reason": "Não foi possível validar a resposta com segurança.", "suggested_answer": NOT_FOUND_MESSAGE}
+        return self._soften_overstrict_block(parsed, answer)
+
+    def _parse_review_response(self, text: str) -> dict | None:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        action = str(data.get("action", "")).strip().lower()
+        if action not in {"approve", "rewrite", "block"}:
+            approved = bool(data.get("approved"))
+            action = "approve" if approved else "block"
+        reason = str(data.get("reason", "")).strip()
+        suggested_answer = str(data.get("suggested_answer", "")).strip()
+        return {"action": action, "reason": reason, "suggested_answer": suggested_answer}
+
+    def _soften_overstrict_block(self, review: dict, answer: str) -> dict:
+        action = review.get("action", "approve")
+        if action != "block":
+            return review
+
+        reason = str(review.get("reason", "")).strip()
+        normalized_reason = reason.casefold()
+        generic_block = not normalized_reason or any(
+            phrase in normalized_reason
+            for phrase in (
+                "não foi possível validar",
+                "nao foi possivel validar",
+                "sem base documental suficiente",
+                "base insuficiente",
+                "resposta vazia",
+                "não encontrei",
+                "nao encontrei",
+                "excessivamente conservadora",
+            )
+        )
+        if generic_block:
+            return {
+                "action": "rewrite",
+                "reason": reason or "Revisão conservadora demais; resposta ajustada para evitar falso bloqueio.",
+                "suggested_answer": answer,
+            }
+        return review
 
     def _request_arguments(self, question: str, chunks: list[dict], history: list[dict], style_chunks: list[dict] | None = None) -> dict:
         context = "\n\n".join(

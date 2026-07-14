@@ -63,6 +63,30 @@ class AuthRepository:
                     uploaded_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS payment_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    reference TEXT NOT NULL UNIQUE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    provider_preference_id TEXT UNIQUE,
+                    approved_payment_id TEXT UNIQUE,
+                    expected_amount TEXT NOT NULL,
+                    currency TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'created',
+                    status_detail TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS payment_transactions (
+                    provider_payment_id TEXT PRIMARY KEY,
+                    payment_order_id INTEGER NOT NULL REFERENCES payment_orders(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL,
+                    status_detail TEXT,
+                    amount TEXT NOT NULL,
+                    currency TEXT NOT NULL,
+                    processed_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_payment_orders_user_id
+                    ON payment_orders(user_id, created_at DESC);
             """)
         self.ensure_admin()
 
@@ -114,6 +138,388 @@ class AuthRepository:
         except sqlite3.IntegrityError:
             return False, "Este email ja esta cadastrado."
         return True, "Cadastro criado com sucesso."
+
+    def get_user(self, user_id: int) -> sqlite3.Row | None:
+        with self._connect() as db:
+            return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+    def create_payment_order(self, user_id: int, expected_amount: str, currency: str) -> sqlite3.Row:
+        now = self._now()
+        reference = f"mag-{secrets.token_urlsafe(24)}"
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO payment_orders(
+                    reference, user_id, expected_amount, currency, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'created', ?, ?)
+                """,
+                (reference, user_id, expected_amount, currency.upper(), now, now),
+            )
+            return db.execute("SELECT * FROM payment_orders WHERE reference = ?", (reference,)).fetchone()
+
+    def attach_payment_preference(self, reference: str, preference_id: str) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE payment_orders
+                SET provider_preference_id = ?, status = 'pending', updated_at = ?
+                WHERE reference = ?
+                """,
+                (preference_id, self._now(), reference),
+            )
+
+    def apply_provider_subscription(
+        self,
+        reference: str,
+        subscription_id: str,
+        status: str,
+        amount: str,
+        currency: str,
+        *,
+        started_at: str | None = None,
+        renews_at: str | None = None,
+    ) -> sqlite3.Row:
+        """Concilia a assinatura consultada na API e sincroniza o acesso do usuario."""
+        status = status.strip().lower()
+        order_status = "approved" if status == "authorized" else (status or "unknown")
+        now = self._now()
+        with self._connect() as db:
+            order = db.execute(
+                "SELECT * FROM payment_orders WHERE reference = ?", (reference,)
+            ).fetchone()
+            if not order:
+                raise ValueError("Referencia de assinatura desconhecida.")
+            if order["provider_preference_id"] not in {None, subscription_id}:
+                raise ValueError("Pedido ja vinculado a outra assinatura.")
+
+            db.execute(
+                """
+                UPDATE payment_orders
+                SET provider_preference_id = ?, status = ?, status_detail = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (subscription_id, order_status, status[:500], now, order["id"]),
+            )
+
+            if status == "authorized":
+                db.execute(
+                    """
+                    UPDATE users
+                    SET account_type = 'completa', subscription_status = 'ativa',
+                        payment_provider_subscription_id = ?,
+                        subscription_started_at = COALESCE(subscription_started_at, ?),
+                        subscription_renews_at = ?
+                    WHERE id = ?
+                    """,
+                    (subscription_id, started_at or now, renews_at, order["user_id"]),
+                )
+            elif status in {"paused", "cancelled", "cancelled_by_collector"}:
+                db.execute(
+                    """
+                    UPDATE users
+                    SET account_type = 'gratuita', subscription_status = ?,
+                        subscription_renews_at = NULL
+                    WHERE id = ? AND payment_provider_subscription_id = ?
+                    """,
+                    ("pausada" if status == "paused" else "cancelada", order["user_id"], subscription_id),
+                )
+
+            return db.execute("SELECT * FROM payment_orders WHERE id = ?", (order["id"],)).fetchone()
+
+    def apply_subscription_invoice(
+        self,
+        reference: str,
+        subscription_id: str,
+        invoice_id: str,
+        payment_id: str,
+        status: str,
+        status_detail: str,
+        amount: str,
+        currency: str,
+        *,
+        renews_at: str | None = None,
+    ) -> sqlite3.Row:
+        """Registra uma mensalidade de forma idempotente e aplica seu efeito no acesso."""
+        status = status.strip().lower()
+        now = self._now()
+        transaction_id = payment_id or f"invoice-{invoice_id}"
+        with self._connect() as db:
+            order = db.execute(
+                "SELECT * FROM payment_orders WHERE reference = ?", (reference,)
+            ).fetchone()
+            if not order:
+                raise ValueError("Referencia de assinatura desconhecida.")
+            if order["provider_preference_id"] != subscription_id:
+                raise ValueError("Fatura nao pertence a assinatura vinculada ao pedido.")
+            existing = db.execute(
+                "SELECT payment_order_id FROM payment_transactions WHERE provider_payment_id = ?",
+                (transaction_id,),
+            ).fetchone()
+            if existing and existing["payment_order_id"] != order["id"]:
+                raise ValueError("Pagamento ja vinculado a outra assinatura.")
+
+            db.execute(
+                """
+                INSERT INTO payment_transactions(
+                    provider_payment_id, payment_order_id, status, status_detail,
+                    amount, currency, processed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_payment_id) DO UPDATE SET
+                    status = excluded.status,
+                    status_detail = excluded.status_detail,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    processed_at = excluded.processed_at
+                """,
+                (transaction_id, order["id"], status, status_detail[:500], amount, currency, now),
+            )
+
+            if status == "approved":
+                db.execute(
+                    """
+                    UPDATE payment_orders
+                    SET status = 'approved', status_detail = ?, approved_payment_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status_detail[:500], payment_id or None, now, order["id"]),
+                )
+                db.execute(
+                    """
+                    UPDATE users
+                    SET account_type = 'completa', subscription_status = 'ativa',
+                        payment_provider_subscription_id = ?,
+                        subscription_started_at = COALESCE(subscription_started_at, ?),
+                        subscription_renews_at = ?
+                    WHERE id = ?
+                    """,
+                    (subscription_id, now, renews_at, order["user_id"]),
+                )
+            elif status in {"refunded", "charged_back", "cancelled"}:
+                db.execute(
+                    "UPDATE payment_orders SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?",
+                    (status, status_detail[:500], now, order["id"]),
+                )
+                db.execute(
+                    """
+                    UPDATE users
+                    SET account_type = 'gratuita', subscription_status = 'inativa',
+                        subscription_renews_at = NULL
+                    WHERE id = ? AND payment_provider_subscription_id = ?
+                    """,
+                    (order["user_id"], subscription_id),
+                )
+            elif order["status"] != "approved":
+                db.execute(
+                    "UPDATE payment_orders SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?",
+                    (status or "unknown", status_detail[:500], now, order["id"]),
+                )
+
+            return db.execute("SELECT * FROM payment_orders WHERE id = ?", (order["id"],)).fetchone()
+
+    def mark_payment_order_error(self, reference: str, detail: str) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE payment_orders SET status = 'error', status_detail = ?, updated_at = ? WHERE reference = ?",
+                (detail[:500], self._now(), reference),
+            )
+
+    def get_payment_order(self, reference: str) -> sqlite3.Row | None:
+        with self._connect() as db:
+            return db.execute("SELECT * FROM payment_orders WHERE reference = ?", (reference,)).fetchone()
+
+    def get_latest_payment_order(self, user_id: int) -> sqlite3.Row | None:
+        with self._connect() as db:
+            return db.execute(
+                "SELECT * FROM payment_orders WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+
+    def apply_provider_payment(
+        self,
+        reference: str,
+        payment_id: str,
+        status: str,
+        status_detail: str,
+        amount: str,
+        currency: str,
+    ) -> sqlite3.Row:
+        """Registra um pagamento de forma idempotente e recalcula o acesso relacionado."""
+        status = status.strip().lower()
+        status_detail = status_detail.strip().lower()
+        grants_access = status == "approved" or (status == "charged_back" and status_detail == "reimbursed")
+        now = self._now()
+        with self._connect() as db:
+            order = db.execute(
+                "SELECT * FROM payment_orders WHERE reference = ?",
+                (reference,),
+            ).fetchone()
+            if not order:
+                raise ValueError("Referencia de pagamento desconhecida.")
+            existing = db.execute(
+                "SELECT payment_order_id FROM payment_transactions WHERE provider_payment_id = ?",
+                (payment_id,),
+            ).fetchone()
+            if existing and existing["payment_order_id"] != order["id"]:
+                raise ValueError("Pagamento ja vinculado a outra referencia.")
+
+            db.execute(
+                """
+                INSERT INTO payment_transactions(
+                    provider_payment_id, payment_order_id, status, status_detail,
+                    amount, currency, processed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_payment_id) DO UPDATE SET
+                    status = excluded.status,
+                    status_detail = excluded.status_detail,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    processed_at = excluded.processed_at
+                """,
+                (payment_id, order["id"], status, status_detail[:500], amount, currency, now),
+            )
+
+            if grants_access:
+                db.execute(
+                    """
+                    UPDATE payment_orders
+                    SET status = 'approved', status_detail = ?, approved_payment_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status_detail[:500], payment_id, now, order["id"]),
+                )
+                db.execute(
+                    """
+                    UPDATE users
+                    SET account_type = 'completa', subscription_status = 'ativa',
+                        payment_provider_subscription_id = ?,
+                        subscription_started_at = COALESCE(subscription_started_at, ?),
+                        subscription_renews_at = NULL
+                    WHERE id = ?
+                    """,
+                    (payment_id, now, order["user_id"]),
+                )
+            elif status in {"refunded", "charged_back", "cancelled"} and order["approved_payment_id"] == payment_id:
+                db.execute(
+                    "UPDATE payment_orders SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?",
+                    (status, status_detail[:500], now, order["id"]),
+                )
+                fallback = db.execute(
+                    """
+                    SELECT approved_payment_id FROM payment_orders
+                    WHERE user_id = ? AND id != ? AND status = 'approved'
+                    ORDER BY updated_at DESC, id DESC LIMIT 1
+                    """,
+                    (order["user_id"], order["id"]),
+                ).fetchone()
+                if fallback:
+                    db.execute(
+                        """
+                        UPDATE users SET account_type = 'completa', subscription_status = 'ativa',
+                            payment_provider_subscription_id = ?
+                        WHERE id = ? AND payment_provider_subscription_id = ?
+                        """,
+                        (fallback["approved_payment_id"], order["user_id"], payment_id),
+                    )
+                else:
+                    db.execute(
+                        """
+                        UPDATE users
+                        SET account_type = 'gratuita', subscription_status = 'inativa',
+                            payment_provider_subscription_id = NULL, subscription_renews_at = NULL
+                        WHERE id = ? AND payment_provider_subscription_id = ?
+                        """,
+                        (order["user_id"], payment_id),
+                    )
+            elif order["status"] != "approved":
+                db.execute(
+                    "UPDATE payment_orders SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?",
+                    (status or "unknown", status_detail[:500], now, order["id"]),
+                )
+
+            return db.execute("SELECT * FROM payment_orders WHERE id = ?", (order["id"],)).fetchone()
+
+    def update_subscription(
+        self,
+        user_id: int,
+        *,
+        account_type: str | None = None,
+        subscription_status: str | None = None,
+        payment_provider_subscription_id: str | None = None,
+        started_at: str | None = None,
+        renews_at: str | None = None,
+    ) -> None:
+        assignments: list[str] = []
+        values: list[str] = []
+        if account_type is not None:
+            assignments.append("account_type = ?")
+            values.append(account_type)
+        if subscription_status is not None:
+            assignments.append("subscription_status = ?")
+            values.append(subscription_status)
+        if payment_provider_subscription_id is not None:
+            assignments.append("payment_provider_subscription_id = ?")
+            values.append(payment_provider_subscription_id)
+        if started_at is not None:
+            assignments.append("subscription_started_at = ?")
+            values.append(started_at)
+        if renews_at is not None:
+            assignments.append("subscription_renews_at = ?")
+            values.append(renews_at)
+        if not assignments:
+            return
+        values.append(str(user_id))
+        with self._connect() as db:
+            db.execute(f"UPDATE users SET {', '.join(assignments)} WHERE id = ?", values)
+
+    def activate_full_access(self, user_id: int, provider_subscription_id: str | None = None) -> None:
+        now = self._now()
+        self.update_subscription(
+            user_id,
+            account_type="completa",
+            subscription_status="ativa",
+            payment_provider_subscription_id=provider_subscription_id,
+            started_at=now,
+            renews_at=None,
+        )
+
+    def apply_coupon_access(self, user_id: int, coupon_code: str) -> None:
+        now = self._now()
+        self.update_subscription(
+            user_id,
+            account_type="completa",
+            subscription_status="ativa",
+            payment_provider_subscription_id=f"cupom:{coupon_code}",
+            started_at=now,
+            renews_at=None,
+        )
+
+    def set_free_access_review(self, allow_free_access: bool) -> None:
+        account_type = "gratuita" if allow_free_access else "completa"
+        status = "inativa" if allow_free_access else "ativa"
+        with self._connect() as db:
+            db.execute(
+                "UPDATE users SET account_type = ?, subscription_status = ? WHERE role != 'admin'",
+                (account_type, status),
+            )
+
+    def can_use_query(self, user: sqlite3.Row) -> tuple[bool, str]:
+        if user["role"] == "admin" or user["account_type"] == "completa" or user["subscription_status"] == "ativa":
+            return True, ""
+        today = datetime.now(timezone.utc).date().isoformat()
+        if user["last_query_date"] != today:
+            return True, ""
+        if int(user["daily_query_count"] or 0) >= 3:
+            return False, "A versão gratuita permite apenas 3 consultas por dia."
+        return True, ""
+
+    def can_generate_presentation(self, user: sqlite3.Row, kind: str) -> tuple[bool, str]:
+        if user["role"] == "admin" or user["account_type"] == "completa" or user["subscription_status"] == "ativa":
+            return True, ""
+        field = "script_generation_count" if kind == "script" else "presentation_generation_count"
+        limit_label = "roteiro" if kind == "script" else "slide"
+        if int(user[field] or 0) >= 1:
+            return False, f"A versão gratuita permite apenas 1 {limit_label}."
+        return True, ""
 
     def authenticate(self, login: str, password: str) -> sqlite3.Row | None:
         user = self.find_user_by_login(login)

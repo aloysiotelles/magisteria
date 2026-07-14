@@ -2,6 +2,9 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 import asyncio
+from decimal import Decimal
+import hashlib
+import hmac
 import time
 
 import pymupdf
@@ -14,6 +17,7 @@ from services.auth_repository import AuthRepository
 from services.vector_store import LocalVectorStore
 from services.document_loader import load_document
 from services.presentation_service import PresentationService, safe_filename
+from services.mercado_pago_service import MercadoPagoService
 
 
 def authenticated_client() -> TestClient:
@@ -21,6 +25,13 @@ def authenticated_client() -> TestClient:
     response = client.post("/login", data={"email": "Admin", "senha": "3510"})
     assert response.status_code == 200
     return client
+
+
+def create_free_user(client: TestClient, email: str = "teste@exemplo.com", password: str = "Senha123") -> None:
+    response = client.post("/cadastro", data={"nome": "Teste Usuario", "email": email, "senha": password}, follow_redirects=False)
+    assert response.status_code == 303
+    login = client.post("/login", data={"email": email, "senha": password})
+    assert login.status_code == 200
 
 
 def test_vector_store_indexes_and_finds_txt(tmp_path: Path):
@@ -172,6 +183,68 @@ def test_stream_continues_after_output_limit(monkeypatch):
     assert fake_responses.calls == 2
 
 
+def test_answer_is_rewritten_when_reviewer_rejects(monkeypatch):
+    class FakeResponses:
+        def __init__(self):
+            self.calls = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return SimpleNamespace(output_text="Resposta original com extrapolação.")
+            return SimpleNamespace(
+                output_text='{"action": "block", "reason": "Extrapolou a base", "suggested_answer": "Não encontrei essa informação nos documentos cadastrados."}'
+            )
+
+    fake_responses = FakeResponses()
+    monkeypatch.setattr(
+        "services.answer_service.AsyncOpenAI",
+        lambda api_key: SimpleNamespace(responses=fake_responses),
+    )
+    service = AnswerService("chave", "modelo", "modelo-revisor")
+    chunks = [{"source": "Catecismo.txt", "location": "página 1", "text": "Trecho", "score": 1.0}]
+
+    async def call():
+        return await service.answer_with_review("Pergunta", chunks)
+
+    result = asyncio.run(call())
+
+    assert result["resposta"] == NOT_FOUND_MESSAGE
+    assert result["status_revisao"] == "block"
+    assert result["motivo_revisao"] == "Extrapolou a base"
+    assert len(fake_responses.calls) == 2
+
+
+def test_answer_softens_generic_block_to_rewrite(monkeypatch):
+    class FakeResponses:
+        def __init__(self):
+            self.calls = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return SimpleNamespace(output_text="Resposta simples e apoiada.")
+            return SimpleNamespace(
+                output_text='{"action": "block", "reason": "Não foi possível validar a resposta com segurança.", "suggested_answer": "Não encontrei essa informação nos documentos cadastrados."}'
+            )
+
+    fake_responses = FakeResponses()
+    monkeypatch.setattr(
+        "services.answer_service.AsyncOpenAI",
+        lambda api_key: SimpleNamespace(responses=fake_responses),
+    )
+    service = AnswerService("chave", "modelo", "modelo-revisor")
+    chunks = [{"source": "Catecismo.txt", "location": "página 1", "text": "Trecho", "score": 1.0}]
+
+    async def call():
+        return await service.answer_with_review("Pergunta", chunks)
+
+    result = asyncio.run(call())
+
+    assert result["status_revisao"] == "rewrite"
+    assert result["resposta"] == "Resposta simples e apoiada."
+
+
 def test_answer_prompt_requires_consolidated_text():
     service = AnswerService("chave", "modelo")
     chunks = [{"source": "Catecismo.txt", "location": "página 1", "text": "Trecho", "score": 1.0}]
@@ -191,6 +264,226 @@ def test_answer_prompt_requires_consolidated_text():
 
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in instructions
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in request["input"]
+
+
+def test_free_plan_limits_queries_and_presentations(tmp_path: Path, monkeypatch):
+    db_file = tmp_path / "magisteria.sqlite"
+    repo = AuthRepository(db_file)
+    monkeypatch.setattr(application, "auth_repository", repo)
+    client = TestClient(application.app)
+    create_free_user(client, email="livre@exemplo.com")
+
+    class FakeAnswerService:
+        api_key = "x"
+
+        async def answer_with_review(self, *args, **kwargs):
+            return {"resposta": "ok", "status_revisao": "approve", "motivo_revisao": ""}
+
+    monkeypatch.setattr(application, "answer_service", FakeAnswerService())
+    monkeypatch.setattr(application, "ordered_chunks", lambda payload: [{"source": "x", "location": "página 1", "text": "trecho", "score": 1.0}])
+    monkeypatch.setattr(application, "homily_style_chunks", lambda payload: [])
+    monkeypatch.setattr(application.vector_store, "search_ordered", lambda *args, **kwargs: [{"source": "x", "location": "página 1", "text": "trecho", "ordem": 1, "categoria": "Documento"}])
+    async def fake_create_outline(*args, **kwargs):
+        return [{"titulo": "A", "sintese": "B", "pontos": ["c"]}]
+
+    async def fake_create_plan(*args, **kwargs):
+        return {"titulo_curto": "A", "frase_final": "B", "topicos": [{"titulo": "A", "sintese": "B", "pontos": ["c"]}]}
+
+    async def fake_create_pptx(*args, **kwargs):
+        return b"pptx"
+
+    monkeypatch.setattr(application.presentation_service, "create_outline", fake_create_outline)
+    monkeypatch.setattr(application.presentation_service, "create_docx", lambda *args, **kwargs: b"docx")
+    monkeypatch.setattr(application.presentation_service, "create_plan", fake_create_plan)
+    monkeypatch.setattr(application.presentation_service, "create_pptx", fake_create_pptx)
+
+    for _ in range(3):
+        response = client.post("/perguntar-stream", json={"pergunta": "teste", "historico": []})
+        assert response.status_code == 200
+
+    blocked = client.post("/perguntar-stream", json={"pergunta": "teste", "historico": []})
+    assert blocked.status_code == 403
+
+    script = client.post("/criar-roteiro", json={"titulo": "Tema", "resposta": "Texto suficiente para gerar roteiro"})
+    assert script.status_code == 200
+    slide = client.post("/criar-slides", json={"titulo": "Tema", "resposta": "Texto suficiente para gerar slides"})
+    assert slide.status_code == 200
+
+    blocked_script = client.post("/criar-roteiro", json={"titulo": "Tema", "resposta": "Texto suficiente para gerar roteiro"})
+    blocked_slide = client.post("/criar-slides", json={"titulo": "Tema", "resposta": "Texto suficiente para gerar slides"})
+    assert blocked_script.status_code == 403
+    assert blocked_slide.status_code == 403
+
+
+def test_coupon_and_verified_payment_activate_full_access(tmp_path: Path, monkeypatch):
+    db_file = tmp_path / "magisteria.sqlite"
+    repo = AuthRepository(db_file)
+    monkeypatch.setattr(application, "auth_repository", repo)
+    monkeypatch.setattr(application, "FREE_CUPON_CODES", {"LIBERA100"})
+
+    class FakeMercadoPago:
+        configured = True
+        webhook_signature_configured = True
+        price = Decimal("29.90")
+        currency = "BRL"
+        invoice_status = "approved"
+
+        async def create_subscription(self, user, external_reference):
+            self.reference = external_reference
+            return {
+                "id": "sub_123",
+                "checkout_url": "https://www.mercadopago.com.br/checkout/v1/redirect",
+            }
+
+        def validate_webhook_signature(self, *args):
+            return True
+
+        async def get_subscription(self, subscription_id):
+            return {
+                "id": subscription_id,
+                "external_reference": self.reference,
+                "status": "authorized",
+                "auto_recurring": {"transaction_amount": 29.9, "currency_id": "BRL"},
+                "next_payment_date": "2026-08-14T12:00:00Z",
+            }
+
+        async def get_authorized_payment(self, invoice_id):
+            return {
+                "id": invoice_id,
+                "preapproval_id": "sub_123",
+                "external_reference": self.reference,
+                "transaction_amount": 29.9,
+                "currency_id": "BRL",
+                "payment": {"id": "123456", "status": self.invoice_status, "status_detail": "accredited"},
+            }
+
+    provider = FakeMercadoPago()
+    monkeypatch.setattr(application, "mercado_pago_service", provider)
+    client = TestClient(application.app)
+    create_free_user(client, email="cupom@exemplo.com")
+
+    coupon = client.post("/assinatura/cupom", json={"cupom": "LIBERA100"})
+    assert coupon.status_code == 200
+    assert coupon.json()["usuario"]["is_full_access"] is True
+
+    other = TestClient(application.app)
+    create_free_user(other, email="mp@exemplo.com")
+    checkout = other.post("/assinatura/checkout")
+    assert checkout.status_code == 200
+    order = repo.get_payment_order(checkout.json()["referencia"])
+    assert order["provider_preference_id"] == "sub_123"
+
+    webhook = TestClient(application.app).post(
+        "/webhooks/mercadopago?data.id=sub_123&type=subscription_preapproval",
+        headers={"x-signature": "ts=1,v1=fake", "x-request-id": "request-1"},
+        json={"type": "subscription_preapproval", "data": {"id": "sub_123"}, "status": "forged"},
+    )
+    assert webhook.status_code == 200
+    assert webhook.json()["status"] == "authorized"
+    updated = repo.find_user_by_login("mp@exemplo.com")
+    assert updated["account_type"] == "completa"
+    assert updated["payment_provider_subscription_id"] == "sub_123"
+
+    provider.invoice_status = "refunded"
+    refund = TestClient(application.app).post(
+        "/webhooks/mercadopago?data.id=789&type=subscription_authorized_payment",
+        headers={"x-signature": "ts=2,v1=fake", "x-request-id": "request-3"},
+        json={"type": "subscription_authorized_payment", "data": {"id": "789"}},
+    )
+    assert refund.status_code == 200
+    assert repo.find_user_by_login("mp@exemplo.com")["account_type"] == "gratuita"
+
+
+def test_payment_with_wrong_amount_is_not_linked(tmp_path: Path, monkeypatch):
+    repo = AuthRepository(tmp_path / "magisteria.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repo)
+
+    class FakeMercadoPago:
+        configured = True
+        webhook_signature_configured = True
+        price = Decimal("29.90")
+        currency = "BRL"
+
+        async def create_subscription(self, user, external_reference):
+            self.reference = external_reference
+            return {"id": "sub_wrong", "checkout_url": "https://www.mercadopago.com.br/checkout"}
+
+        def validate_webhook_signature(self, *args):
+            return True
+
+        async def get_subscription(self, subscription_id):
+            return {
+                "id": subscription_id,
+                "external_reference": self.reference,
+                "status": "authorized",
+                "auto_recurring": {"transaction_amount": 1, "currency_id": "BRL"},
+            }
+
+    provider = FakeMercadoPago()
+    monkeypatch.setattr(application, "mercado_pago_service", provider)
+    client = TestClient(application.app)
+    create_free_user(client, email="valor@exemplo.com")
+    assert client.post("/assinatura/checkout").status_code == 200
+
+    response = TestClient(application.app).post(
+        "/webhooks/mercadopago?data.id=sub_wrong&type=subscription_preapproval",
+        headers={"x-signature": "ts=1,v1=fake", "x-request-id": "request-2"},
+        json={"type": "subscription_preapproval", "data": {"id": "sub_wrong"}},
+    )
+
+    assert response.status_code == 200
+    assert repo.find_user_by_login("valor@exemplo.com")["account_type"] == "gratuita"
+
+
+def test_mercado_pago_webhook_signature_validation():
+    service = MercadoPagoService("token", "segredo", Decimal("10.00"), "BRL", "https://app.example")
+    timestamp = "1742505638683"
+    request_id = "bb56a2f1-6aae-46ac-982e-9dcd3581d08e"
+    data_id = "ABC123"
+    manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{timestamp};"
+    signature = hmac.new(b"segredo", manifest.encode(), hashlib.sha256).hexdigest()
+
+    assert service.validate_webhook_signature(
+        f"ts={timestamp},v1={signature}", request_id, data_id
+    ) is True
+    assert service.validate_webhook_signature(
+        f"ts={timestamp},v1={'0' * 64}", request_id, data_id
+    ) is False
+
+
+def test_mercado_pago_subscription_contains_monthly_terms(monkeypatch):
+    service = MercadoPagoService(
+        "token", "segredo", Decimal("29.90"), "BRL", "https://magisteria.example"
+    )
+    captured = {}
+
+    async def fake_request(method, path, **kwargs):
+        captured.update(method=method, path=path, payload=kwargs["json"])
+        return {
+            "id": "sub_456",
+            "init_point": "https://www.mercadopago.com.br/checkout/v1/redirect",
+        }
+
+    monkeypatch.setattr(service, "_request", fake_request)
+    result = asyncio.run(
+        service.create_subscription(
+            {"full_name": "Maria Silva", "email": "maria@example.com"},
+            "mag-reference",
+        )
+    )
+
+    assert result["id"] == "sub_456"
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/preapproval"
+    assert captured["payload"]["external_reference"] == "mag-reference"
+    assert captured["payload"]["payer_email"] == "maria@example.com"
+    assert captured["payload"]["auto_recurring"] == {
+        "frequency": 1,
+        "frequency_type": "months",
+        "transaction_amount": 29.9,
+        "currency_id": "BRL",
+    }
+    assert captured["payload"]["status"] == "pending"
 
 
 def test_source_references_use_document_specific_locators():
@@ -255,7 +548,12 @@ def test_routes_and_closed_base_behavior(monkeypatch):
 
     answer_response = client.post("/perguntar", json={"pergunta": "Assunto ausente na base"})
     assert answer_response.status_code == 200
-    assert answer_response.json() == {"resposta": NOT_FOUND_MESSAGE, "fontes": []}
+    assert answer_response.json() == {
+        "resposta": NOT_FOUND_MESSAGE,
+        "status_revisao": "block",
+        "motivo_revisao": "Sem base documental suficiente.",
+        "fontes": [],
+    }
     stream_response = client.post("/perguntar-stream", json={"pergunta": "Assunto ausente na base"})
     assert stream_response.status_code == 200
     assert '"tipo": "texto"' in stream_response.text

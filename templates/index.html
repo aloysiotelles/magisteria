@@ -17,6 +17,7 @@
       <button class="utility-button" id="admin-documents-button" type="button">Base documental</button>
       {% endif %}
       <button class="utility-button" id="database-button" type="button">Base de dados</button>
+      <button class="utility-button" id="subscription-button" type="button">Assinatura</button>
       <button class="utility-button" id="change-password-button" type="button">Alterar senha</button>
       <button class="utility-button" id="about-button" type="button">Sobre</button>
       <form class="logout-form" method="post" action="/logout"><button class="utility-button" type="submit">Sair</button></form>
@@ -74,6 +75,7 @@
       <section id="result-panel" class="result-grid hidden" aria-live="polite">
         <article class="content-card answer-card">
           <div class="card-title"><span class="ornament">✦</span><h2>Resposta</h2></div>
+          <p id="answer-status" class="review-status hidden" aria-live="polite"></p>
           <div id="answer" class="answer-content"></div>
           <section id="presentation-module" class="presentation-module hidden" aria-labelledby="presentation-title">
             <p class="section-kicker">ROTEIRO E APRESENTAÇÃO</p>
@@ -165,6 +167,46 @@
         </div>
         <p id="change-password-status" class="presentation-status" aria-live="polite"></p>
       </form>
+    </div>
+  </dialog>
+
+  <dialog class="modal" id="subscription-modal" aria-labelledby="subscription-title">
+    <div class="modal-header">
+      <div>
+        <p class="section-kicker">Plano e acesso</p>
+        <h2 id="subscription-title">Assinatura</h2>
+      </div>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+    </div>
+    <div class="modal-content subscription-content">
+      <p id="subscription-summary" class="modal-intro">Consultando sua assinatura...</p>
+      <div class="subscription-box">
+        <h3>Acesso gratuito</h3>
+        <p>3 consultas por dia, 1 roteiro e 1 slide.</p>
+      </div>
+      <div class="subscription-box highlighted">
+        <h3>Acesso completo</h3>
+        <p>Liberação total após confirmação segura do Mercado Pago. <strong id="payment-price"></strong></p>
+        <button class="button button-primary payment-link" id="payment-checkout-button" type="button">Assinar com Mercado Pago</button>
+        <p id="payment-status" class="presentation-status" aria-live="polite"></p>
+      </div>
+      <form id="coupon-form" class="auth-form coupon-form">
+        <label>
+          Cupom
+          <input id="coupon-input" type="text" autocomplete="off" placeholder="Digite o código do cupom">
+        </label>
+        <div class="actions">
+          <button class="button button-secondary" id="coupon-submit" type="submit">Aplicar cupom</button>
+        </div>
+        <p id="coupon-status" class="presentation-status" aria-live="polite"></p>
+      </form>
+      {% if user.role == "admin" %}
+      <div class="subscription-box admin-box">
+        <h3>Admin</h3>
+        <p>Você pode rever a modalidade gratuita sem alterar os demais cadastros.</p>
+        <button class="button button-secondary" id="toggle-free-access-button" type="button">Revisar acesso gratuito</button>
+      </div>
+      {% endif %}
     </div>
   </dialog>
   {% if user.role == "admin" %}

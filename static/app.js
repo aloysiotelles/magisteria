@@ -3,6 +3,7 @@ const questionField = document.querySelector("#question");
 const searchButton = document.querySelector("#search-button");
 const statusElement = document.querySelector("#base-status");
 const resultPanel = document.querySelector("#result-panel");
+const answerStatusElement = document.querySelector("#answer-status");
 const answerElement = document.querySelector("#answer");
 const sourcesElement = document.querySelector("#sources");
 const messagePanel = document.querySelector("#message-panel");
@@ -15,7 +16,9 @@ const progressEta = document.querySelector("#progress-eta");
 const databaseButton = document.querySelector("#database-button");
 const changePasswordButton = document.querySelector("#change-password-button");
 const aboutButton = document.querySelector("#about-button");
+const subscriptionButton = document.querySelector("#subscription-button");
 const databaseModal = document.querySelector("#database-modal");
+const subscriptionModal = document.querySelector("#subscription-modal");
 const changePasswordModal = document.querySelector("#change-password-modal");
 const changePasswordForm = document.querySelector("#change-password-form");
 const currentPassword = document.querySelector("#current-password");
@@ -24,6 +27,15 @@ const confirmPassword = document.querySelector("#confirm-password");
 const changePasswordSubmit = document.querySelector("#change-password-submit");
 const changePasswordStatus = document.querySelector("#change-password-status");
 const aboutModal = document.querySelector("#about-modal");
+const subscriptionSummary = document.querySelector("#subscription-summary");
+const paymentCheckoutButton = document.querySelector("#payment-checkout-button");
+const paymentPrice = document.querySelector("#payment-price");
+const paymentStatus = document.querySelector("#payment-status");
+const couponForm = document.querySelector("#coupon-form");
+const couponInput = document.querySelector("#coupon-input");
+const couponSubmit = document.querySelector("#coupon-submit");
+const couponStatus = document.querySelector("#coupon-status");
+const toggleFreeAccessButton = document.querySelector("#toggle-free-access-button");
 const databaseList = document.querySelector("#database-list");
 const databaseSummary = document.querySelector("#database-summary");
 const searchCard = document.querySelector("#search-card");
@@ -155,6 +167,32 @@ function renderSources(sources) {
   }));
 }
 
+function reviewLabel(status) {
+  if (status === "approve") return "Resposta duplamente checada na base de dados";
+  if (status === "rewrite") return "Resposta duplamente checada na base de dados";
+  if (status === "block") return "Resposta duplamente checada na base de dados";
+  return "Resposta duplamente checada na base de dados";
+}
+
+function reviewTone(status) {
+  if (status === "approve") return "approved";
+  if (status === "rewrite") return "warning";
+  if (status === "block") return "blocked";
+  return "neutral";
+}
+
+function renderReviewStatus(status, reason) {
+  if (!answerStatusElement) return;
+  if (!status) {
+    answerStatusElement.className = "review-status hidden";
+    answerStatusElement.textContent = "";
+    return;
+  }
+  answerStatusElement.className = `review-status ${reviewTone(status)}`;
+  answerStatusElement.textContent = reviewLabel(status);
+  answerStatusElement.classList.remove("hidden");
+}
+
 function closeModal(modal) {
   if (modal.open) modal.close();
 }
@@ -217,6 +255,56 @@ databaseButton.addEventListener("click", async () => {
 });
 
 aboutButton.addEventListener("click", () => aboutModal.showModal());
+if (subscriptionButton) {
+  subscriptionButton.addEventListener("click", async () => {
+    subscriptionSummary.textContent = "Consultando sua assinatura...";
+    paymentStatus.textContent = "";
+    subscriptionModal.showModal();
+    try {
+      const data = await request("/assinatura");
+      subscriptionSummary.textContent = `${data.usuario.plano === "completo" ? "Seu acesso está completo." : "Seu acesso está na modalidade gratuita."} ${data.pagamento.confirmacao}`;
+      paymentPrice.textContent = data.pagamento.valor ? `Valor: ${data.pagamento.valor}.` : "";
+      paymentCheckoutButton.disabled = data.usuario.plano === "completo" || !data.pagamento.disponivel;
+      if (!data.pagamento.disponivel) {
+        paymentStatus.textContent = "O pagamento ainda está sendo configurado pelo administrador.";
+      } else if (data.pagamento.status === "pending") {
+        paymentStatus.textContent = "Há um pagamento iniciado aguardando confirmação.";
+      }
+    } catch (error) {
+      subscriptionSummary.textContent = error.message;
+    }
+  });
+}
+
+if (paymentCheckoutButton) {
+  paymentCheckoutButton.addEventListener("click", async () => {
+    paymentCheckoutButton.disabled = true;
+    paymentStatus.textContent = "Preparando sua assinatura segura...";
+    try {
+      const data = await request("/assinatura/checkout", { method: "POST" });
+      window.location.assign(data.checkout_url);
+    } catch (error) {
+      paymentStatus.textContent = error.message;
+      paymentCheckoutButton.disabled = false;
+    }
+  });
+}
+
+const paymentReturn = new URLSearchParams(window.location.search).get("pagamento");
+if (paymentReturn && subscriptionButton) {
+  subscriptionButton.click();
+  const paymentReturnMessages = {
+    aprovado: "Pagamento aprovado. Seu acesso completo já está liberado.",
+    approved: "Pagamento aprovado. Seu acesso completo já está liberado.",
+    pendente: "Pagamento pendente. A liberação ocorrerá assim que o Mercado Pago confirmar.",
+    pending: "Pagamento pendente. A liberação ocorrerá assim que o Mercado Pago confirmar.",
+    falha: "O pagamento não foi concluído. Você pode tentar novamente.",
+    failure: "O pagamento não foi concluído. Você pode tentar novamente.",
+    rejected: "O pagamento foi recusado. Confira os dados ou escolha outro meio de pagamento.",
+  };
+  paymentStatus.textContent = paymentReturnMessages[paymentReturn] || "O retorno foi recebido e a assinatura está sendo conferida.";
+  window.history.replaceState({}, "", window.location.pathname);
+}
 
 changePasswordButton.addEventListener("click", () => {
   changePasswordForm.reset();
@@ -364,6 +452,47 @@ if (documentUploadForm) {
   });
 }
 
+if (couponForm) {
+  couponForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    couponStatus.textContent = "";
+    couponSubmit.disabled = true;
+    try {
+      const data = await request("/assinatura/cupom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cupom: couponInput.value.trim() }),
+      });
+      couponStatus.textContent = data.mensagem;
+      subscriptionSummary.textContent = "Seu acesso agora é completo.";
+    } catch (error) {
+      couponStatus.textContent = error.message;
+    } finally {
+      couponSubmit.disabled = false;
+    }
+  });
+}
+
+if (toggleFreeAccessButton) {
+  toggleFreeAccessButton.addEventListener("click", async () => {
+    toggleFreeAccessButton.disabled = true;
+    try {
+      const data = await request("/admin/assinatura/controle-gratuito", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permitir: false }),
+      });
+      subscriptionSummary.textContent = data.permitir
+        ? "A modalidade gratuita está liberada novamente."
+        : "A modalidade gratuita foi revista pelo Admin e o acesso passou a ser completo.";
+    } catch (error) {
+      subscriptionSummary.textContent = error.message;
+    } finally {
+      toggleFreeAccessButton.disabled = false;
+    }
+  });
+}
+
 function archiveCurrentResult() {
   if (resultPanel.classList.contains("hidden") || !answerElement.textContent.trim()) return;
   const archived = resultPanel.cloneNode(true);
@@ -449,6 +578,7 @@ form.addEventListener("submit", async event => {
 
     archiveCurrentResult();
     answerElement.textContent = "";
+    renderReviewStatus("");
     presentationModule.classList.add("hidden");
     presentationStatus.textContent = "";
     currentPresentation = null;
@@ -477,6 +607,7 @@ form.addEventListener("submit", async event => {
         if (item.tipo === "texto") {
           answerElement.textContent += item.texto;
           answerForHistory += item.texto;
+          renderReviewStatus(item.status_revisao, item.motivo_revisao);
         }
         if (item.tipo === "fim") {
           completed = true;

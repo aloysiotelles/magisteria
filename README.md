@@ -64,6 +64,13 @@ O arquivo `.env` aceita:
 
 - `OPENAI_API_KEY`: chave obrigatória para gerar respostas;
 - `OPENAI_MODEL`: modelo usado na redação da resposta;
+- `OPENAI_REVIEW_MODEL`: modelo usado para conferir e aprovar a resposta final;
+- `APP_PUBLIC_URL`: endereço HTTPS público da aplicação (no Railway, o domínio também é detectado automaticamente);
+- `MERCADO_PAGO_ACCESS_TOKEN`: Access Token da aplicação no Mercado Pago;
+- `MERCADO_PAGO_WEBHOOK_SECRET`: assinatura secreta exibida na configuração de Webhooks;
+- `MERCADO_PAGO_PRICE`: valor mensal da assinatura, com ponto decimal (por exemplo, `14.99`);
+- `MERCADO_PAGO_CURRENCY`: moeda do pagamento, normalmente `BRL`;
+- `FREE_ACCESS_COUPONS`: cupons de cortesia separados por vírgula; vazio desativa o resgate;
 - `MAX_CONTEXT_CHUNKS`: máximo de trechos enviados por pergunta;
 - `MIN_RELEVANCE_SCORE`: limiar mínimo para aceitar um trecho;
 - `CHUNK_SIZE` e `CHUNK_OVERLAP`: tamanho e sobreposição dos trechos.
@@ -93,7 +100,16 @@ Em produção, defina as variáveis de ambiente no servidor e execute:
 python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-Use HTTPS, um proxy reverso e armazenamento persistente para `Documentos` e `banco_vetorial`. Login, upload, pagamentos e os demais módulos futuros não fazem parte desta versão; os serviços estão separados para permitir essa evolução sem reescrever o núcleo.
+Use HTTPS, um proxy reverso e armazenamento persistente para `Documentos` e `banco_vetorial`.
+
+### Ativação do Mercado Pago
+
+1. Crie ou selecione uma aplicação em **Mercado Pago > Suas integrações** e copie o Access Token do ambiente correto.
+2. Preencha as cinco variáveis `APP_PUBLIC_URL`/`MERCADO_PAGO_*` descritas acima. Não use credenciais de teste em produção.
+3. Em **Webhooks > Configurar notificações**, cadastre `https://SEU-DOMINIO/webhooks/mercadopago`, habilite **Pagamentos (legacy)** e **Planos e assinaturas**, e copie a assinatura secreta para `MERCADO_PAGO_WEBHOOK_SECRET`.
+4. Faça primeiro uma assinatura com usuários e cartões de teste. Confira que ela passa de `pending` para `authorized` e que a conta recebe acesso completo.
+
+O checkout cria uma assinatura mensal exclusiva por usuário. A aplicação só libera o acesso depois de consultar a assinatura ou a fatura recorrente na API do Mercado Pago e conferir referência, valor e moeda; o corpo do webhook e os parâmetros de retorno não são aceitos como prova de pagamento.
 
 ## Atalhos de deploy
 

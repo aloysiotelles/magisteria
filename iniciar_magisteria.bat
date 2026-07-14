@@ -27,8 +27,8 @@ if not exist ".env" (
   exit /b 1
 )
 
-echo Iniciando o MAGISTERIA e atualizando a base documental...
-echo O navegador sera aberto assim que tudo estiver pronto.
+echo Iniciando o MAGISTERIA...
+echo O navegador sera aberto assim que o servidor responder.
 ".venv\Scripts\python.exe" launcher.py
 exit /b
 
