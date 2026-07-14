@@ -559,6 +559,25 @@ async def create_subscription_checkout(request: Request):
     return {"checkout_url": subscription["checkout_url"], "referencia": order["reference"]}
 
 
+@app.get("/admin/pagamentos/{operation_id}")
+async def payment_diagnostic(operation_id: str, request: Request):
+    """Consulta administrativa, sem dados pessoais, para diagnosticar recusas do provedor."""
+    user = current_user(request)
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Acesso administrativo necessario.")
+    payment = await mercado_pago_service.get_payment(operation_id)
+    return {
+        "id": str(payment.get("id") or ""),
+        "status": str(payment.get("status") or ""),
+        "status_detail": str(payment.get("status_detail") or ""),
+        "payment_method": str(payment.get("payment_method_id") or ""),
+        "payment_type": str(payment.get("payment_type_id") or ""),
+        "transaction_amount": payment.get("transaction_amount"),
+        "currency": str(payment.get("currency_id") or ""),
+        "external_reference": str(payment.get("external_reference") or ""),
+    }
+
+
 @app.get("/assinatura/retorno", include_in_schema=False)
 async def subscription_return(request: Request):
     user = current_user(request)
