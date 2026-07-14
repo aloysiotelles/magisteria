@@ -217,6 +217,10 @@ textarea::placeholder { color: #929990; }
 .modal-close { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid #d8d2c2; border-radius: 50%; color: var(--forest); background: transparent; font-size: 1.45rem; line-height: 1; cursor: pointer; }
 .modal-close:hover { color: white; background: var(--red); border-color: var(--red); }
 .modal-content { padding: 22px 26px 28px; overflow-y: auto; }
+.disclaimer-modal { max-width: 680px; }
+.disclaimer-modal .modal-content p { margin: 0 0 16px; color: var(--muted); line-height: 1.65; }
+.disclaimer-modal .modal-content strong { color: var(--forest); }
+.disclaimer-actions { justify-content: flex-end; margin-top: 24px; }
 .modal-intro { margin: 0 0 16px; color: var(--muted); font-size: .88rem; }
 .document-list { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
 .document-list li { position: relative; padding: 12px 14px 12px 36px; overflow-wrap: anywhere; border: 1px solid #e5dfd0; border-radius: 9px; background: #faf7ef; font-size: .88rem; }

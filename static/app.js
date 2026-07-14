@@ -16,6 +16,8 @@ const progressEta = document.querySelector("#progress-eta");
 const databaseButton = document.querySelector("#database-button");
 const changePasswordButton = document.querySelector("#change-password-button");
 const aboutButton = document.querySelector("#about-button");
+const disclaimerModal = document.querySelector("#disclaimer-modal");
+const disclaimerOkButton = document.querySelector("#disclaimer-ok-button");
 const subscriptionButton = document.querySelector("#subscription-button");
 const databaseModal = document.querySelector("#database-modal");
 const subscriptionModal = document.querySelector("#subscription-modal");
@@ -247,9 +249,15 @@ document.querySelectorAll("[data-close-modal]").forEach(button => {
 
 document.querySelectorAll("dialog").forEach(modal => {
   modal.addEventListener("click", event => {
-    if (event.target === modal) closeModal(modal);
+    if (event.target === modal && !modal.dataset.requiresConfirmation) closeModal(modal);
   });
 });
+
+if (disclaimerModal && disclaimerOkButton) {
+  disclaimerModal.addEventListener("cancel", event => event.preventDefault());
+  disclaimerOkButton.addEventListener("click", () => disclaimerModal.close());
+  disclaimerModal.showModal();
+}
 
 databaseButton.addEventListener("click", async () => {
   databaseList.replaceChildren();
