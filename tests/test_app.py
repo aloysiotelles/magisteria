@@ -8,6 +8,7 @@ import hmac
 import time
 
 import pymupdf
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -17,7 +18,7 @@ from services.auth_repository import AuthRepository
 from services.vector_store import LocalVectorStore
 from services.document_loader import load_document
 from services.presentation_service import PresentationService, safe_filename
-from services.mercado_pago_service import MercadoPagoService
+from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 
 
 def authenticated_client() -> TestClient:
@@ -458,6 +459,8 @@ def test_mercado_pago_subscription_contains_monthly_terms(monkeypatch):
     captured = {}
 
     async def fake_request(method, path, **kwargs):
+        if method == "GET" and path == "/users/me":
+            return {"email": "collector@example.com"}
         captured.update(method=method, path=path, payload=kwargs["json"])
         return {
             "id": "sub_456",
@@ -484,6 +487,27 @@ def test_mercado_pago_subscription_contains_monthly_terms(monkeypatch):
         "currency_id": "BRL",
     }
     assert captured["payload"]["status"] == "pending"
+
+
+def test_mercado_pago_rejects_collector_as_payer(monkeypatch):
+    service = MercadoPagoService(
+        "token", "segredo", Decimal("14.99"), "BRL", "https://magisteria.example"
+    )
+
+    async def fake_request(method, path, **kwargs):
+        assert (method, path) == ("GET", "/users/me")
+        return {"email": "collector@example.com"}
+
+    monkeypatch.setattr(service, "_request", fake_request)
+
+    with pytest.raises(MercadoPagoError, match="mesma conta") as exc_info:
+        asyncio.run(
+            service.create_subscription(
+                {"full_name": "Conta recebedora", "email": "COLLECTOR@example.com"},
+                "mag-reference",
+            )
+        )
+    assert exc_info.value.status_code == 400
 
 
 def test_source_references_use_document_specific_locators():

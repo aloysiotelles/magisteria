@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 class MercadoPagoError(RuntimeError):
     """Falha segura e apresentavel na integracao com o Mercado Pago."""
 
+    def __init__(self, message: str, *, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class MercadoPagoService:
     API_BASE_URL = "https://api.mercadopago.com"
@@ -35,6 +39,7 @@ class MercadoPagoService:
         self.currency = currency.strip().upper() or "BRL"
         self.public_url = public_url.strip().rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._collector_email: str | None = None
 
     @property
     def configured(self) -> bool:
@@ -76,6 +81,15 @@ class MercadoPagoService:
                 raise MercadoPagoError("As credenciais do Mercado Pago precisam ser revisadas.")
             if response.status_code == 404:
                 raise MercadoPagoError("O pagamento informado nao foi encontrado no Mercado Pago.")
+            if (
+                response.status_code == 400
+                and "payer and collector cannot be the same user" in response.text.lower()
+            ):
+                raise MercadoPagoError(
+                    "Nao e possivel assinar usando a mesma conta do Mercado Pago que recebe os pagamentos. "
+                    "Entre com outra conta para concluir a assinatura.",
+                    status_code=400,
+                )
             raise MercadoPagoError("O Mercado Pago nao conseguiu processar a solicitacao agora.")
         try:
             data = response.json()
@@ -85,14 +99,31 @@ class MercadoPagoService:
             raise MercadoPagoError("O Mercado Pago devolveu uma resposta invalida.")
         return data
 
+    async def get_collector_email(self) -> str:
+        """Retorna o e-mail da conta que recebe os pagamentos, sem expô-lo ao cliente."""
+        if self._collector_email is None:
+            profile = await self._request("GET", "/users/me")
+            self._collector_email = str(profile.get("email") or "").strip().casefold()
+        return self._collector_email
+
     async def create_subscription(self, user: dict, external_reference: str) -> dict:
         if not self.configured:
             raise MercadoPagoError("O pagamento ainda nao foi configurado pelo administrador.")
+        payer_email = str(user.get("email") or "").strip()
+        if not payer_email:
+            raise MercadoPagoError("Seu e-mail de cadastro e necessario para criar a assinatura.", status_code=400)
+        collector_email = await self.get_collector_email()
+        if collector_email and payer_email.casefold() == collector_email:
+            raise MercadoPagoError(
+                "Nao e possivel assinar usando a mesma conta do Mercado Pago que recebe os pagamentos. "
+                "Entre com outra conta para concluir a assinatura.",
+                status_code=400,
+            )
         base = f"{self.public_url}/"
         payload = {
             "reason": "MAGISTERIA - assinatura mensal",
             "external_reference": external_reference,
-            "payer_email": str(user.get("email") or "").strip(),
+            "payer_email": payer_email,
             "auto_recurring": {
                 "frequency": 1,
                 "frequency_type": "months",

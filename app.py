@@ -25,7 +25,7 @@ from services.presentation_service import PresentationService, safe_filename
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.5.10"
+APP_VERSION = "0.5.11"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -554,7 +554,7 @@ async def create_subscription_checkout(request: Request):
         subscription = await mercado_pago_service.create_subscription(user, order["reference"])
     except MercadoPagoError as exc:
         auth_repository.mark_payment_order_error(order["reference"], str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     auth_repository.attach_payment_preference(order["reference"], subscription["id"])
     return {"checkout_url": subscription["checkout_url"], "referencia": order["reference"]}
 
