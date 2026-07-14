@@ -25,7 +25,7 @@ from services.presentation_service import PresentationService, safe_filename
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.5.11"
+APP_VERSION = "0.5.12"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(

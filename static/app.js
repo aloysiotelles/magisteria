@@ -94,10 +94,26 @@ function readableErrorMessage(detail) {
 }
 
 async function request(url, options = {}) {
-  const response = await fetch(url, options);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(readableErrorMessage(data.detail));
-  return data;
+  const { timeout = 20000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(readableErrorMessage(data.detail));
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("A solicitaÃ§Ã£o demorou mais do que o esperado. Tente novamente.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function refreshStatus() {
