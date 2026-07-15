@@ -233,6 +233,10 @@ textarea::placeholder { color: #929990; }
 .subscription-box h3 { margin: 0 0 6px; color: var(--forest); font-size: 1.03rem; }
 .subscription-box p { margin: 0; color: var(--muted); line-height: 1.55; }
 .subscription-box.highlighted { background: linear-gradient(180deg, #fff5e4, #fbf8f0); border-color: rgba(189, 133, 21, .34); }
+.payment-document-field { display: grid; gap: 7px; margin: 15px 0; color: var(--forest); font-size: .84rem; font-weight: 700; }
+.payment-document-field input { width: 100%; box-sizing: border-box; padding: 12px 13px; border: 1px solid #d8d2c2; border-radius: 10px; background: white; color: var(--ink); font: inherit; }
+.payment-document-field input:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 4px rgba(189, 133, 21, .10); }
+.payment-document-field small { color: var(--muted); font-weight: 500; line-height: 1.4; }
 .payment-link { display: inline-flex; width: fit-content; margin-top: 10px; text-decoration: none; }
 .coupon-form { margin-top: 6px; }
 .admin-box { background: #f4efe2; }

@@ -26,7 +26,7 @@ from services.asaas_service import AsaasError, AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.2"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -202,6 +202,26 @@ def _asaas_internal_status(provider_status: str, event_type: str = "") -> str:
     if event == "PAYMENT_RECEIVED_IN_CASH_UNDONE":
         return "cancelled"
     return status.lower() or "unknown"
+
+
+def valid_cpf_cnpj(value: str) -> bool:
+    digits = "".join(character for character in str(value) if character.isdigit())
+    if len(digits) not in {11, 14} or len(set(digits)) == 1:
+        return False
+
+    def check_digit(numbers: str, weights: list[int]) -> str:
+        remainder = sum(int(number) * weight for number, weight in zip(numbers, weights)) % 11
+        return "0" if remainder < 2 else str(11 - remainder)
+
+    if len(digits) == 11:
+        first = check_digit(digits[:9], list(range(10, 1, -1)))
+        second = check_digit(digits[:9] + first, list(range(11, 1, -1)))
+        return digits[-2:] == first + second
+    first_weights = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+    second_weights = [6] + first_weights
+    first = check_digit(digits[:12], first_weights)
+    second = check_digit(digits[:12] + first, second_weights)
+    return digits[-2:] == first + second
 
 
 async def reconcile_asaas_payment(
@@ -624,6 +644,15 @@ async def create_subscription_checkout(request: Request):
         raise HTTPException(status_code=503, detail="O pagamento ainda não foi configurado pelo administrador.")
 
     if provider_name == "asaas":
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            payload = {}
+        document = "".join(
+            character for character in str(payload.get("cpf_cnpj") or "") if character.isdigit()
+        )
+        if not valid_cpf_cnpj(document):
+            raise HTTPException(status_code=400, detail="Informe um CPF ou CNPJ válido.")
         latest_order = auth_repository.get_latest_payment_order(user["id"], "asaas")
         if latest_order and latest_order["status"] == "pending" and latest_order["provider_preference_id"]:
             try:
@@ -643,7 +672,7 @@ async def create_subscription_checkout(request: Request):
             "asaas",
         )
         try:
-            customer = await asaas_service.get_or_create_customer(user)
+            customer = await asaas_service.get_or_create_customer(user, document)
             subscription = await asaas_service.create_subscription(customer["id"], order["reference"])
         except (AsaasError, KeyError) as exc:
             message = str(exc) if isinstance(exc, AsaasError) else "O Asaas devolveu dados incompletos do cliente."

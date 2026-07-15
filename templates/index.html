@@ -203,6 +203,11 @@
       <div class="subscription-box highlighted">
         <h3>Acesso completo</h3>
           <p>Liberação total após confirmação segura do Asaas. <strong id="payment-price"></strong></p>
+          <label class="payment-document-field" for="payment-document">
+            CPF ou CNPJ do assinante
+            <input id="payment-document" type="text" inputmode="numeric" autocomplete="off" maxlength="18" placeholder="Somente para identificação no Asaas">
+            <small>O número é enviado diretamente ao Asaas e não é armazenado pelo MagisterIA.</small>
+          </label>
           <button class="button button-primary payment-link" id="payment-checkout-button" type="button">Assinar com Asaas</button>
         <p id="payment-status" class="presentation-status" aria-live="polite"></p>
       </div>

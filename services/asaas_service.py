@@ -117,12 +117,15 @@ class AsaasService:
         messages = [message for message in messages if message]
         return " ".join(messages)[:500]
 
-    async def get_or_create_customer(self, user: dict) -> dict:
+    async def get_or_create_customer(self, user: dict, cpf_cnpj: str) -> dict:
         user_id = str(user.get("id") or "").strip()
         full_name = str(user.get("full_name") or "").strip()
         email = str(user.get("email") or "").strip()
         if not user_id or not full_name or not email:
             raise AsaasError("Nome e e-mail do cadastro sao necessarios para criar a assinatura.", status_code=400)
+        document = "".join(character for character in cpf_cnpj if character.isdigit())
+        if len(document) not in {11, 14}:
+            raise AsaasError("Informe um CPF ou CNPJ valido.", status_code=400)
         external_reference = f"magisteria-user-{user_id}"
         result = await self._request(
             "GET",
@@ -130,17 +133,27 @@ class AsaasService:
             params={"externalReference": external_reference, "limit": 1},
         )
         customers = result.get("data") if isinstance(result.get("data"), list) else []
+        customer_payload = {
+            "name": full_name,
+            "email": email,
+            "cpfCnpj": document,
+            "externalReference": external_reference,
+            "notificationDisabled": False,
+        }
         if customers and isinstance(customers[0], dict) and customers[0].get("id"):
-            return customers[0]
+            customer = customers[0]
+            if str(customer.get("cpfCnpj") or "") != document:
+                customer_id = self._validated_identifier(customer["id"], "cliente")
+                return await self._request(
+                    "POST",
+                    f"/customers/{quote(customer_id, safe='')}",
+                    json=customer_payload,
+                )
+            return customer
         return await self._request(
             "POST",
             "/customers",
-            json={
-                "name": full_name,
-                "email": email,
-                "externalReference": external_reference,
-                "notificationDisabled": False,
-            },
+            json=customer_payload,
         )
 
     async def create_subscription(self, customer_id: str, external_reference: str) -> dict:

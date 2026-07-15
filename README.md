@@ -113,6 +113,7 @@ Use HTTPS, um proxy reverso e armazenamento persistente para `Documentos` e `ban
 5. Antes da abertura ao público, troque a URL e a chave pelas credenciais de produção e repita uma compra real de baixo valor.
 
 O checkout cria uma assinatura mensal de R$ 14,99 e abre a cobrança hospedada pelo Asaas. A aplicação só libera o acesso depois de consultar novamente cobrança e assinatura na API e conferir referência, valor, moeda e vínculo. O corpo do webhook e os parâmetros de retorno não são aceitos como prova de pagamento. Eventos repetidos são processados de forma idempotente.
+O CPF/CNPJ exigido pelo Asaas é validado no servidor e enviado ao provedor no momento do checkout, sem ser armazenado no banco do MAGISTERIA.
 
 ## Atalhos de deploy
 

@@ -570,7 +570,8 @@ def test_asaas_checkout_and_webhook_control_premium(tmp_path: Path, monkeypatch)
         currency = "BRL"
         status = "PENDING"
 
-        async def get_or_create_customer(self, user):
+        async def get_or_create_customer(self, user, cpf_cnpj):
+            assert cpf_cnpj == "24971563792"
             return {"id": "cus_asaas_123"}
 
         async def create_subscription(self, customer_id, external_reference):
@@ -611,7 +612,8 @@ def test_asaas_checkout_and_webhook_control_premium(tmp_path: Path, monkeypatch)
     client = TestClient(application.app)
     create_free_user(client, email="asaas@exemplo.com")
 
-    checkout = client.post("/assinatura/checkout")
+    assert client.post("/assinatura/checkout", json={"cpf_cnpj": "111"}).status_code == 400
+    checkout = client.post("/assinatura/checkout", json={"cpf_cnpj": "24971563792"})
     assert checkout.status_code == 200
     order = repo.get_payment_order(checkout.json()["referencia"])
     assert order["provider"] == "asaas"

@@ -32,6 +32,7 @@ const aboutModal = document.querySelector("#about-modal");
 const subscriptionSummary = document.querySelector("#subscription-summary");
 const paymentCheckoutButton = document.querySelector("#payment-checkout-button");
 const paymentPrice = document.querySelector("#payment-price");
+const paymentDocument = document.querySelector("#payment-document");
 const paymentStatus = document.querySelector("#payment-status");
 const couponForm = document.querySelector("#coupon-form");
 const couponInput = document.querySelector("#coupon-input");
@@ -302,10 +303,20 @@ if (subscriptionButton) {
 
 if (paymentCheckoutButton) {
   paymentCheckoutButton.addEventListener("click", async () => {
+    const documentDigits = paymentDocument.value.replace(/\D/g, "");
+    if (![11, 14].includes(documentDigits.length)) {
+      paymentStatus.textContent = "Informe um CPF ou CNPJ válido para continuar.";
+      paymentDocument.focus();
+      return;
+    }
     paymentCheckoutButton.disabled = true;
     paymentStatus.textContent = "Preparando sua assinatura segura...";
     try {
-      const data = await request("/assinatura/checkout", { method: "POST" });
+      const data = await request("/assinatura/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cpf_cnpj: documentDigits }),
+      });
       window.location.assign(data.checkout_url);
     } catch (error) {
       paymentStatus.textContent = error.message;
