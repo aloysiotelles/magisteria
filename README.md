@@ -66,10 +66,11 @@ O arquivo `.env` aceita:
 - `OPENAI_MODEL`: modelo usado na redação da resposta;
 - `OPENAI_REVIEW_MODEL`: modelo usado para conferir e aprovar a resposta final;
 - `APP_PUBLIC_URL`: endereço HTTPS público da aplicação (no Railway, o domínio também é detectado automaticamente);
-- `MERCADO_PAGO_ACCESS_TOKEN`: Access Token da aplicação no Mercado Pago;
-- `MERCADO_PAGO_WEBHOOK_SECRET`: assinatura secreta exibida na configuração de Webhooks;
-- `MERCADO_PAGO_PRICE`: valor mensal da assinatura, com ponto decimal (por exemplo, `14.99`);
-- `MERCADO_PAGO_CURRENCY`: moeda do pagamento, normalmente `BRL`;
+- `ASAAS_API_KEY`: chave da API do ambiente correto;
+- `ASAAS_WEBHOOK_TOKEN`: segredo exclusivo do webhook, com pelo menos 32 caracteres e diferente da chave da API;
+- `ASAAS_API_BASE_URL`: `https://api-sandbox.asaas.com/v3` para homologação ou `https://api.asaas.com/v3` para produção;
+- `ASAAS_PRICE`: valor mensal da assinatura, com ponto decimal (por exemplo, `14.99`);
+- `ASAAS_BILLING_TYPE`: forma de cobrança; `UNDEFINED` permite que o assinante escolha no link do Asaas;
 - `FREE_ACCESS_COUPONS`: cupons de cortesia separados por vírgula; vazio desativa o resgate;
 - `MAX_CONTEXT_CHUNKS`: máximo de trechos enviados por pergunta;
 - `MIN_RELEVANCE_SCORE`: limiar mínimo para aceitar um trecho;
@@ -102,14 +103,15 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
 Use HTTPS, um proxy reverso e armazenamento persistente para `Documentos` e `banco_vetorial`.
 
-### Ativação do Mercado Pago
+### Ativação do Asaas
 
-1. Crie ou selecione uma aplicação em **Mercado Pago > Suas integrações** e copie o Access Token do ambiente correto.
-2. Preencha as cinco variáveis `APP_PUBLIC_URL`/`MERCADO_PAGO_*` descritas acima. Não use credenciais de teste em produção.
-3. Em **Webhooks > Configurar notificações**, cadastre `https://SEU-DOMINIO/webhooks/mercadopago`, habilite **Pagamentos (legacy)** e **Planos e assinaturas**, e copie a assinatura secreta para `MERCADO_PAGO_WEBHOOK_SECRET`.
-4. Faça primeiro uma assinatura com usuários e cartões de teste. Confira que ela passa de `pending` para `authorized` e que a conta recebe acesso completo.
+1. Gere a chave em **Integrações > Chaves de API** no ambiente correto e guarde-a diretamente nas variáveis do servidor.
+2. Preencha `APP_PUBLIC_URL` e as cinco variáveis `ASAAS_*` descritas acima. Sandbox e produção têm chaves independentes.
+3. Em **Integrações > Webhooks**, cadastre `https://SEU-DOMINIO/webhooks/asaas`, defina um token exclusivo de 32 a 255 caracteres e habilite os eventos de pagamento.
+4. Homologue uma assinatura no Sandbox e confira a sequência `PAYMENT_CREATED` e `PAYMENT_CONFIRMED`/`PAYMENT_RECEIVED`.
+5. Antes da abertura ao público, troque a URL e a chave pelas credenciais de produção e repita uma compra real de baixo valor.
 
-O checkout cria uma assinatura mensal exclusiva por usuário. A aplicação só libera o acesso depois de consultar a assinatura ou a fatura recorrente na API do Mercado Pago e conferir referência, valor e moeda; o corpo do webhook e os parâmetros de retorno não são aceitos como prova de pagamento.
+O checkout cria uma assinatura mensal de R$ 14,99 e abre a cobrança hospedada pelo Asaas. A aplicação só libera o acesso depois de consultar novamente cobrança e assinatura na API e conferir referência, valor, moeda e vínculo. O corpo do webhook e os parâmetros de retorno não são aceitos como prova de pagamento. Eventos repetidos são processados de forma idempotente.
 
 ## Atalhos de deploy
 

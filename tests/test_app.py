@@ -18,6 +18,7 @@ from services.auth_repository import AuthRepository
 from services.vector_store import LocalVectorStore
 from services.document_loader import load_document
 from services.presentation_service import PresentationService, safe_filename
+from services.asaas_service import AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 
 
@@ -369,9 +370,11 @@ def test_coupon_and_verified_payment_activate_full_access(tmp_path: Path, monkey
 
     other = TestClient(application.app)
     create_free_user(other, email="mp@exemplo.com")
-    checkout = other.post("/assinatura/checkout")
-    assert checkout.status_code == 200
-    order = repo.get_payment_order(checkout.json()["referencia"])
+    mp_user = repo.find_user_by_login("mp@exemplo.com")
+    order = repo.create_payment_order(mp_user["id"], "29.90", "BRL", "mercado_pago")
+    repo.attach_payment_preference(order["reference"], "sub_123")
+    provider.reference = order["reference"]
+    order = repo.get_payment_order(order["reference"])
     assert order["provider_preference_id"] == "sub_123"
 
     webhook = TestClient(application.app).post(
@@ -424,7 +427,10 @@ def test_payment_with_wrong_amount_is_not_linked(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(application, "mercado_pago_service", provider)
     client = TestClient(application.app)
     create_free_user(client, email="valor@exemplo.com")
-    assert client.post("/assinatura/checkout").status_code == 200
+    mp_user = repo.find_user_by_login("valor@exemplo.com")
+    order = repo.create_payment_order(mp_user["id"], "29.90", "BRL", "mercado_pago")
+    repo.attach_payment_preference(order["reference"], "sub_wrong")
+    provider.reference = order["reference"]
 
     response = TestClient(application.app).post(
         "/webhooks/mercadopago?data.id=sub_wrong&type=subscription_preapproval",
@@ -508,6 +514,143 @@ def test_mercado_pago_rejects_collector_as_payer(monkeypatch):
             )
         )
     assert exc_info.value.status_code == 400
+
+
+def test_asaas_subscription_contains_monthly_terms(monkeypatch):
+    service = AsaasService(
+        "sandbox-key",
+        "webhook-token",
+        Decimal("14.99"),
+        "https://magisteria.example",
+        AsaasService.SANDBOX_URL,
+    )
+    captured = {}
+
+    async def fake_request(method, path, **kwargs):
+        if method == "POST" and path == "/subscriptions":
+            captured.update(method=method, path=path, payload=kwargs["json"])
+            return {"id": "sub_asaas_123"}
+        assert (method, path) == ("GET", "/subscriptions/sub_asaas_123/payments")
+        return {
+            "data": [
+                {
+                    "id": "pay_asaas_123",
+                    "invoiceUrl": "https://sandbox.asaas.com/i/pay_asaas_123",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(service, "_request", fake_request)
+    result = asyncio.run(service.create_subscription("cus_123", "mag-reference"))
+
+    assert result["id"] == "sub_asaas_123"
+    assert result["checkout_url"].startswith("https://sandbox.asaas.com/")
+    assert captured["payload"]["customer"] == "cus_123"
+    assert captured["payload"]["billingType"] == "UNDEFINED"
+    assert captured["payload"]["value"] == 14.99
+    assert captured["payload"]["cycle"] == "MONTHLY"
+    assert captured["payload"]["externalReference"] == "mag-reference"
+    assert captured["payload"]["callback"] == {
+        "successUrl": "https://magisteria.example/assinatura/retorno",
+        "autoRedirect": True,
+    }
+
+
+def test_asaas_checkout_and_webhook_control_premium(tmp_path: Path, monkeypatch):
+    repo = AuthRepository(tmp_path / "magisteria.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repo)
+
+    class FakeAsaas:
+        configured = True
+        price = Decimal("14.99")
+        currency = "BRL"
+        status = "PENDING"
+
+        async def get_or_create_customer(self, user):
+            return {"id": "cus_asaas_123"}
+
+        async def create_subscription(self, customer_id, external_reference):
+            self.reference = external_reference
+            return {
+                "id": "sub_asaas_123",
+                "payment_id": "pay_asaas_123",
+                "checkout_url": "https://sandbox.asaas.com/i/pay_asaas_123",
+            }
+
+        async def get_first_subscription_payment(self, subscription_id):
+            return {
+                "id": "pay_asaas_123",
+                "invoiceUrl": "https://sandbox.asaas.com/i/pay_asaas_123",
+            }
+
+        async def get_payment(self, payment_id):
+            return {
+                "id": payment_id,
+                "subscription": "sub_asaas_123",
+                "externalReference": self.reference,
+                "value": 14.99,
+                "status": self.status,
+            }
+
+        async def get_subscription(self, subscription_id):
+            return {
+                "id": subscription_id,
+                "externalReference": self.reference,
+                "nextDueDate": "2026-08-15",
+            }
+
+        def validate_webhook_token(self, token):
+            return token == "webhook-token"
+
+    provider = FakeAsaas()
+    monkeypatch.setattr(application, "asaas_service", provider)
+    client = TestClient(application.app)
+    create_free_user(client, email="asaas@exemplo.com")
+
+    checkout = client.post("/assinatura/checkout")
+    assert checkout.status_code == 200
+    order = repo.get_payment_order(checkout.json()["referencia"])
+    assert order["provider"] == "asaas"
+    assert order["provider_preference_id"] == "sub_asaas_123"
+    assert repo.find_user_by_login("asaas@exemplo.com")["account_type"] == "gratuita"
+
+    provider.status = "CONFIRMED"
+    event = {
+        "id": "evt_asaas_1",
+        "event": "PAYMENT_CONFIRMED",
+        "payment": {"id": "pay_asaas_123", "status": "FORGED"},
+    }
+    webhook_client = TestClient(application.app)
+    assert webhook_client.post("/webhooks/asaas", json=event).status_code == 401
+    approved = webhook_client.post(
+        "/webhooks/asaas",
+        headers={"asaas-access-token": "webhook-token"},
+        json=event,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+    assert repo.find_user_by_login("asaas@exemplo.com")["account_type"] == "completa"
+
+    duplicate = webhook_client.post(
+        "/webhooks/asaas",
+        headers={"asaas-access-token": "webhook-token"},
+        json=event,
+    )
+    assert duplicate.status_code == 200
+    assert "já processada" in duplicate.json()["mensagem"]
+
+    provider.status = "REFUNDED"
+    refunded = webhook_client.post(
+        "/webhooks/asaas",
+        headers={"asaas-access-token": "webhook-token"},
+        json={
+            "id": "evt_asaas_2",
+            "event": "PAYMENT_REFUNDED",
+            "payment": {"id": "pay_asaas_123"},
+        },
+    )
+    assert refunded.status_code == 200
+    assert repo.find_user_by_login("asaas@exemplo.com")["account_type"] == "gratuita"
 
 
 def test_source_references_use_document_specific_locators():

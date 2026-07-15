@@ -42,6 +42,13 @@ class Settings:
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1100"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
     APP_PUBLIC_URL = _public_url()
+    ASAAS_API_KEY = os.getenv("ASAAS_API_KEY", "").strip()
+    ASAAS_WEBHOOK_TOKEN = os.getenv("ASAAS_WEBHOOK_TOKEN", "").strip()
+    ASAAS_API_BASE_URL = os.getenv(
+        "ASAAS_API_BASE_URL", "https://api-sandbox.asaas.com/v3"
+    ).strip().rstrip("/")
+    ASAAS_PRICE = _decimal_env("ASAAS_PRICE", "14.99")
+    ASAAS_BILLING_TYPE = os.getenv("ASAAS_BILLING_TYPE", "UNDEFINED").strip().upper()
     MERCADO_PAGO_ACCESS_TOKEN = os.getenv("MERCADO_PAGO_ACCESS_TOKEN", "").strip()
     MERCADO_PAGO_WEBHOOK_SECRET = os.getenv("MERCADO_PAGO_WEBHOOK_SECRET", "").strip()
     MERCADO_PAGO_PRICE = _decimal_env("MERCADO_PAGO_PRICE")

@@ -320,8 +320,8 @@ if (paymentReturn && subscriptionButton) {
   const paymentReturnMessages = {
     aprovado: "Pagamento aprovado. Seu acesso completo já está liberado.",
     approved: "Pagamento aprovado. Seu acesso completo já está liberado.",
-    pendente: "Pagamento pendente. A liberação ocorrerá assim que o Mercado Pago confirmar.",
-    pending: "Pagamento pendente. A liberação ocorrerá assim que o Mercado Pago confirmar.",
+    pendente: "Pagamento pendente. A liberação ocorrerá assim que o Asaas confirmar.",
+    pending: "Pagamento pendente. A liberação ocorrerá assim que o Asaas confirmar.",
     falha: "O pagamento não foi concluído. Você pode tentar novamente.",
     failure: "O pagamento não foi concluído. Você pode tentar novamente.",
     rejected: "O pagamento foi recusado. Confira os dados ou escolha outro meio de pagamento.",

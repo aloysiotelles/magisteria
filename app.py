@@ -22,10 +22,11 @@ from config import BASE_DIR, settings
 from services.answer_service import AnswerService, format_abnt_references, format_sources
 from services.auth_repository import AuthRepository
 from services.presentation_service import PresentationService, safe_filename
+from services.asaas_service import AsaasError, AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.5.13"
+APP_VERSION = "0.6.0"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -49,6 +50,14 @@ mercado_pago_service = MercadoPagoService(
     settings.MERCADO_PAGO_PRICE,
     settings.MERCADO_PAGO_CURRENCY,
     settings.APP_PUBLIC_URL,
+)
+asaas_service = AsaasService(
+    settings.ASAAS_API_KEY,
+    settings.ASAAS_WEBHOOK_TOKEN,
+    settings.ASAAS_PRICE,
+    settings.APP_PUBLIC_URL,
+    settings.ASAAS_API_BASE_URL,
+    settings.ASAAS_BILLING_TYPE,
 )
 index_lock = asyncio.Lock()
 indexing_state = {
@@ -116,7 +125,15 @@ app = FastAPI(
 )
 
 AUTH_COOKIE = "magisteria_session"
-PUBLIC_PATHS = {"/health", "/status", "/versao", "/login", "/cadastro", "/webhooks/mercadopago"}
+PUBLIC_PATHS = {
+    "/health",
+    "/status",
+    "/versao",
+    "/login",
+    "/cadastro",
+    "/webhooks/mercadopago",
+    "/webhooks/asaas",
+}
 PUBLIC_PREFIXES = ("/static/",)
 FREE_CUPON_CODES = {code.strip() for code in os.getenv("FREE_ACCESS_COUPONS", "").split(",") if code.strip()}
 
@@ -155,10 +172,73 @@ def subscription_summary(user: dict) -> dict:
 
 
 def formatted_payment_price() -> str:
-    value = f"{mercado_pago_service.price:.2f}".replace(".", ",")
-    if mercado_pago_service.currency == "BRL":
+    value = f"{asaas_service.price:.2f}".replace(".", ",")
+    if asaas_service.currency == "BRL":
         return f"R$ {value}"
-    return f"{mercado_pago_service.currency} {value}"
+    return f"{asaas_service.currency} {value}"
+
+
+def active_payment_provider() -> tuple[str, object]:
+    """O Asaas e o unico provedor disponivel para novas assinaturas."""
+    return "asaas", asaas_service
+
+
+def _asaas_internal_status(provider_status: str, event_type: str = "") -> str:
+    status = provider_status.strip().upper()
+    event = event_type.strip().upper()
+    if event == "PAYMENT_DELETED":
+        return "cancelled"
+    if event == "PAYMENT_REFUNDED" or status in {"REFUNDED", "REFUND_IN_PROGRESS"}:
+        return "refunded"
+    if "CHARGEBACK" in event or "CHARGEBACK" in status:
+        return "charged_back"
+    if status in {"CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"}:
+        return "approved"
+    if event == "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED":
+        return "rejected"
+    return status.lower() or "unknown"
+
+
+async def reconcile_asaas_payment(
+    payment_id: str,
+    expected_user_id: int | None = None,
+    event_type: str = "",
+) -> dict:
+    """Consulta o Asaas e so libera acesso apos validar vinculo, valor e status."""
+    payment = await asaas_service.get_payment(payment_id)
+    provider_payment_id = str(payment.get("id") or "").strip()
+    reference = str(payment.get("externalReference") or "").strip()
+    subscription_id = str(payment.get("subscription") or "").strip()
+    provider_status = str(payment.get("status") or "").strip()
+    raw_amount = payment.get("value")
+    if not provider_payment_id or not subscription_id or raw_amount is None:
+        raise ValueError("Pagamento do Asaas sem os dados necessarios para conciliacao.")
+
+    subscription = await asaas_service.get_subscription(subscription_id)
+    reference = reference or str(subscription.get("externalReference") or "").strip()
+    if not reference:
+        raise ValueError("Pagamento do Asaas sem referencia do MAGISTERIA.")
+    order, amount = _validated_subscription_order(reference, raw_amount, "BRL", expected_user_id)
+    if str(order.get("provider") or "") != "asaas":
+        raise ValueError("Pagamento pertence a outro provedor.")
+    if str(order.get("provider_preference_id") or "") != subscription_id:
+        raise ValueError("Pagamento nao pertence a assinatura Asaas vinculada.")
+    if str(subscription.get("externalReference") or "").strip() != reference:
+        raise ValueError("Assinatura Asaas com referencia divergente.")
+
+    status = _asaas_internal_status(provider_status, event_type)
+    updated = auth_repository.apply_subscription_invoice(
+        reference,
+        subscription_id,
+        provider_payment_id,
+        provider_payment_id,
+        status,
+        provider_status or event_type,
+        f"{amount:.2f}",
+        "BRL",
+        renews_at=str(subscription.get("nextDueDate") or "").strip() or None,
+    )
+    return {"payment_id": provider_payment_id, "status": status, "order": dict(updated)}
 
 
 async def reconcile_mercado_pago_payment(payment_id: str, expected_user_id: int | None = None) -> dict:
@@ -507,7 +587,8 @@ async def change_password(request: Request):
 @app.get("/assinatura")
 async def subscription_info(request: Request):
     user = current_user(request)
-    latest_order = auth_repository.get_latest_payment_order(user["id"])
+    provider_name, provider_service = active_payment_provider()
+    latest_order = auth_repository.get_latest_payment_order(user["id"], provider_name)
     return {
         "usuario": {
             "nome": user["full_name"],
@@ -519,10 +600,11 @@ async def subscription_info(request: Request):
             },
         },
         "pagamento": {
-            "disponivel": mercado_pago_service.configured,
-            "valor": f"{formatted_payment_price()} por mês" if mercado_pago_service.price > 0 else None,
+            "provedor": "Asaas" if provider_name == "asaas" else "Mercado Pago",
+            "disponivel": provider_service.configured,
+            "valor": f"{formatted_payment_price()} por mês" if provider_service.price > 0 else None,
             "status": latest_order["status"] if latest_order else None,
-            "confirmacao": "A liberação completa ocorre depois da confirmação da assinatura pelo Mercado Pago.",
+            "confirmacao": "A liberação completa ocorre depois da confirmação da assinatura pelo Asaas.",
         },
     }
 
@@ -532,32 +614,39 @@ async def create_subscription_checkout(request: Request):
     user = current_user(request)
     if is_full_access(user):
         raise HTTPException(status_code=409, detail="Seu acesso já está completo.")
-    if not mercado_pago_service.configured:
+    provider_name, provider_service = active_payment_provider()
+    if not provider_service.configured:
         raise HTTPException(status_code=503, detail="O pagamento ainda não foi configurado pelo administrador.")
 
-    latest_order = auth_repository.get_latest_payment_order(user["id"])
-    if latest_order and latest_order["status"] == "pending" and latest_order["provider_preference_id"]:
+    if provider_name == "asaas":
+        latest_order = auth_repository.get_latest_payment_order(user["id"], "asaas")
+        if latest_order and latest_order["status"] == "pending" and latest_order["provider_preference_id"]:
+            try:
+                payment = await asaas_service.get_first_subscription_payment(
+                    latest_order["provider_preference_id"]
+                )
+                checkout_url = str(payment.get("invoiceUrl") or "").strip()
+                if checkout_url.startswith("https://"):
+                    return {"checkout_url": checkout_url, "referencia": latest_order["reference"]}
+            except AsaasError:
+                pass
+
+        order = auth_repository.create_payment_order(
+            user["id"],
+            f"{asaas_service.price:.2f}",
+            asaas_service.currency,
+            "asaas",
+        )
         try:
-            existing = await mercado_pago_service.get_subscription(latest_order["provider_preference_id"])
-            checkout_url = str(existing.get("init_point") or "").strip()
-            if str(existing.get("status") or "").lower() == "pending" and checkout_url.startswith("https://"):
-                return {"checkout_url": checkout_url, "referencia": latest_order["reference"]}
-        except MercadoPagoError:
-            pass
-
-    order = auth_repository.create_payment_order(
-        user["id"],
-        f"{mercado_pago_service.price:.2f}",
-        mercado_pago_service.currency,
-    )
-    try:
-        subscription = await mercado_pago_service.create_subscription(user, order["reference"])
-    except MercadoPagoError as exc:
-        auth_repository.mark_payment_order_error(order["reference"], str(exc))
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    auth_repository.attach_payment_preference(order["reference"], subscription["id"])
-    return {"checkout_url": subscription["checkout_url"], "referencia": order["reference"]}
-
+            customer = await asaas_service.get_or_create_customer(user)
+            subscription = await asaas_service.create_subscription(customer["id"], order["reference"])
+        except (AsaasError, KeyError) as exc:
+            message = str(exc) if isinstance(exc, AsaasError) else "O Asaas devolveu dados incompletos do cliente."
+            auth_repository.mark_payment_order_error(order["reference"], message)
+            status_code = exc.status_code if isinstance(exc, AsaasError) else 502
+            raise HTTPException(status_code=status_code, detail=message) from exc
+        auth_repository.attach_payment_preference(order["reference"], subscription["id"])
+        return {"checkout_url": subscription["checkout_url"], "referencia": order["reference"]}
 
 @app.get("/admin/pagamentos/{operation_id}")
 async def payment_diagnostic(operation_id: str, request: Request):
@@ -565,8 +654,22 @@ async def payment_diagnostic(operation_id: str, request: Request):
     user = current_user(request)
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Acesso administrativo necessario.")
+    provider_name, _ = active_payment_provider()
+    if provider_name == "asaas":
+        payment = await asaas_service.get_payment(operation_id)
+        return {
+            "provedor": "asaas",
+            "id": str(payment.get("id") or ""),
+            "status": str(payment.get("status") or ""),
+            "billing_type": str(payment.get("billingType") or ""),
+            "value": payment.get("value"),
+            "currency": "BRL",
+            "external_reference": str(payment.get("externalReference") or ""),
+            "subscription": str(payment.get("subscription") or ""),
+        }
     payment = await mercado_pago_service.get_payment(operation_id)
     return {
+        "provedor": "mercado_pago",
         "id": str(payment.get("id") or ""),
         "status": str(payment.get("status") or ""),
         "status_detail": str(payment.get("status_detail") or ""),
@@ -581,6 +684,21 @@ async def payment_diagnostic(operation_id: str, request: Request):
 @app.get("/assinatura/retorno", include_in_schema=False)
 async def subscription_return(request: Request):
     user = current_user(request)
+    provider_name, _ = active_payment_provider()
+    if provider_name == "asaas":
+        latest_order = auth_repository.get_latest_payment_order(user["id"], "asaas")
+        result = "pendente"
+        if latest_order and latest_order["provider_preference_id"]:
+            try:
+                payment = await asaas_service.get_first_subscription_payment(
+                    latest_order["provider_preference_id"]
+                )
+                reconciliation = await reconcile_asaas_payment(str(payment.get("id") or ""), user["id"])
+                result = "aprovado" if reconciliation["status"] == "approved" else reconciliation["status"]
+            except (AsaasError, ValueError) as exc:
+                logger.warning("Retorno do Asaas não conciliado para usuário %s: %s", user["id"], exc)
+        return RedirectResponse(url=f"/?pagamento={quote(result)}", status_code=303)
+
     subscription_id = str(
         request.query_params.get("preapproval_id")
         or request.query_params.get("subscription_id")
@@ -616,6 +734,43 @@ async def redeem_coupon(request: Request):
     auth_repository.apply_coupon_access(user["id"], code)
     updated = auth_repository.get_user(user["id"])
     return {"mensagem": "Acesso completo liberado pelo cupom.", "usuario": subscription_summary(dict(updated))}
+
+
+@app.post("/webhooks/asaas")
+async def asaas_webhook(request: Request):
+    if not asaas_service.validate_webhook_token(request.headers.get("asaas-access-token")):
+        raise HTTPException(status_code=401, detail="Token do webhook inválido.")
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Notificação do Asaas inválida.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Notificação do Asaas inválida.")
+
+    event_id = str(payload.get("id") or "").strip()
+    event_type = str(payload.get("event") or "").strip().upper()
+    payment = payload.get("payment") if isinstance(payload.get("payment"), dict) else {}
+    payment_id = str(payment.get("id") or "").strip()
+    if not event_id or not event_type:
+        raise HTTPException(status_code=400, detail="Notificação do Asaas incompleta.")
+    if auth_repository.webhook_event_processed("asaas", event_id):
+        return {"mensagem": "Notificação já processada."}
+    if not event_type.startswith("PAYMENT_"):
+        auth_repository.record_webhook_event("asaas", event_id, event_type)
+        return {"mensagem": "Evento ignorado."}
+    if not payment_id:
+        raise HTTPException(status_code=400, detail="Notificação do Asaas sem pagamento.")
+
+    try:
+        result = await reconcile_asaas_payment(payment_id, event_type=event_type)
+    except ValueError as exc:
+        logger.warning("Webhook do Asaas sem vínculo válido: %s", exc)
+        auth_repository.record_webhook_event("asaas", event_id, event_type)
+        return {"mensagem": "Evento sem vínculo válido; ignorado."}
+    except AsaasError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    auth_repository.record_webhook_event("asaas", event_id, event_type)
+    return {"mensagem": "Notificação processada.", "status": result["status"]}
 
 
 @app.post("/webhooks/mercadopago")

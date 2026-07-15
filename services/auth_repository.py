@@ -67,6 +67,7 @@ class AuthRepository:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     reference TEXT NOT NULL UNIQUE,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL DEFAULT 'mercado_pago',
                     provider_preference_id TEXT UNIQUE,
                     approved_payment_id TEXT UNIQUE,
                     expected_amount TEXT NOT NULL,
@@ -87,7 +88,19 @@ class AuthRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_payment_orders_user_id
                     ON payment_orders(user_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS payment_webhook_events (
+                    provider TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    processed_at TEXT NOT NULL,
+                    PRIMARY KEY(provider, event_id)
+                );
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(payment_orders)").fetchall()}
+            if "provider" not in columns:
+                db.execute(
+                    "ALTER TABLE payment_orders ADD COLUMN provider TEXT NOT NULL DEFAULT 'mercado_pago'"
+                )
         self.ensure_admin()
 
     def ensure_admin(self) -> None:
@@ -143,17 +156,23 @@ class AuthRepository:
         with self._connect() as db:
             return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
-    def create_payment_order(self, user_id: int, expected_amount: str, currency: str) -> sqlite3.Row:
+    def create_payment_order(
+        self,
+        user_id: int,
+        expected_amount: str,
+        currency: str,
+        provider: str = "mercado_pago",
+    ) -> sqlite3.Row:
         now = self._now()
         reference = f"mag-{secrets.token_urlsafe(24)}"
         with self._connect() as db:
             db.execute(
                 """
                 INSERT INTO payment_orders(
-                    reference, user_id, expected_amount, currency, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'created', ?, ?)
+                    reference, user_id, provider, expected_amount, currency, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?)
                 """,
-                (reference, user_id, expected_amount, currency.upper(), now, now),
+                (reference, user_id, provider.strip().lower(), expected_amount, currency.upper(), now, now),
             )
             return db.execute("SELECT * FROM payment_orders WHERE reference = ?", (reference,)).fetchone()
 
@@ -327,12 +346,35 @@ class AuthRepository:
         with self._connect() as db:
             return db.execute("SELECT * FROM payment_orders WHERE reference = ?", (reference,)).fetchone()
 
-    def get_latest_payment_order(self, user_id: int) -> sqlite3.Row | None:
+    def get_latest_payment_order(self, user_id: int, provider: str | None = None) -> sqlite3.Row | None:
         with self._connect() as db:
+            if provider:
+                return db.execute(
+                    """SELECT * FROM payment_orders
+                       WHERE user_id = ? AND provider = ?
+                       ORDER BY created_at DESC, id DESC LIMIT 1""",
+                    (user_id, provider.strip().lower()),
+                ).fetchone()
             return db.execute(
                 "SELECT * FROM payment_orders WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
                 (user_id,),
             ).fetchone()
+
+    def webhook_event_processed(self, provider: str, event_id: str) -> bool:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT 1 FROM payment_webhook_events WHERE provider = ? AND event_id = ?",
+                (provider.strip().lower(), event_id.strip()),
+            ).fetchone()
+        return bool(row)
+
+    def record_webhook_event(self, provider: str, event_id: str, event_type: str) -> None:
+        with self._connect() as db:
+            db.execute(
+                """INSERT OR IGNORE INTO payment_webhook_events(provider, event_id, event_type, processed_at)
+                   VALUES (?, ?, ?, ?)""",
+                (provider.strip().lower(), event_id.strip(), event_type.strip(), self._now()),
+            )
 
     def apply_provider_payment(
         self,
