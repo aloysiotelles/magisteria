@@ -49,6 +49,9 @@ class Settings:
     ).strip().rstrip("/")
     ASAAS_PRICE = _decimal_env("ASAAS_PRICE", "14.99")
     ASAAS_BILLING_TYPE = os.getenv("ASAAS_BILLING_TYPE", "UNDEFINED").strip().upper()
+    ASAAS_CALLBACK_ENABLED = os.getenv("ASAAS_CALLBACK_ENABLED", "true").strip().lower() in {
+        "1", "true", "yes", "sim"
+    }
     MERCADO_PAGO_ACCESS_TOKEN = os.getenv("MERCADO_PAGO_ACCESS_TOKEN", "").strip()
     MERCADO_PAGO_WEBHOOK_SECRET = os.getenv("MERCADO_PAGO_WEBHOOK_SECRET", "").strip()
     MERCADO_PAGO_PRICE = _decimal_env("MERCADO_PAGO_PRICE")

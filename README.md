@@ -71,6 +71,7 @@ O arquivo `.env` aceita:
 - `ASAAS_API_BASE_URL`: `https://api-sandbox.asaas.com/v3` para homologação ou `https://api.asaas.com/v3` para produção;
 - `ASAAS_PRICE`: valor mensal da assinatura, com ponto decimal (por exemplo, `14.99`);
 - `ASAAS_BILLING_TYPE`: forma de cobrança; `UNDEFINED` permite que o assinante escolha no link do Asaas;
+- `ASAAS_CALLBACK_ENABLED`: habilita o retorno automático ao aplicativo; use `false` apenas no Sandbox quando o domínio de homologação não estiver cadastrado no Asaas;
 - `FREE_ACCESS_COUPONS`: cupons de cortesia separados por vírgula; vazio desativa o resgate;
 - `MAX_CONTEXT_CHUNKS`: máximo de trechos enviados por pergunta;
 - `MIN_RELEVANCE_SCORE`: limiar mínimo para aceitar um trecho;

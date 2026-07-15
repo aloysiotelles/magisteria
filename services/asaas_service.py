@@ -32,8 +32,9 @@ class AsaasService:
         public_url: str,
         api_base_url: str = SANDBOX_URL,
         billing_type: str = "UNDEFINED",
+        enable_callback: bool = True,
         *,
-        timeout_seconds: float = 15,
+        timeout_seconds: float = 4,
     ) -> None:
         self.api_key = api_key.strip()
         self.webhook_token = webhook_token.strip()
@@ -42,6 +43,7 @@ class AsaasService:
         self.public_url = public_url.strip().rstrip("/")
         self.api_base_url = api_base_url.strip().rstrip("/") or self.SANDBOX_URL
         self.billing_type = billing_type.strip().upper() or "UNDEFINED"
+        self.enable_callback = enable_callback
         self.timeout_seconds = timeout_seconds
 
     @property
@@ -146,19 +148,21 @@ class AsaasService:
             raise AsaasError("O pagamento ainda nao foi configurado pelo administrador.")
         customer_id = self._validated_identifier(customer_id, "cliente")
         callback_url = urljoin(f"{self.public_url}/", "assinatura/retorno")
+        payload = {
+            "customer": customer_id,
+            "billingType": self.billing_type,
+            "value": float(self.price),
+            "nextDueDate": date.today().isoformat(),
+            "cycle": "MONTHLY",
+            "description": "MAGISTERIA - assinatura mensal",
+            "externalReference": external_reference,
+        }
+        if self.enable_callback:
+            payload["callback"] = {"successUrl": callback_url, "autoRedirect": True}
         subscription = await self._request(
             "POST",
             "/subscriptions",
-            json={
-                "customer": customer_id,
-                "billingType": self.billing_type,
-                "value": float(self.price),
-                "nextDueDate": date.today().isoformat(),
-                "cycle": "MONTHLY",
-                "description": "MAGISTERIA - assinatura mensal",
-                "externalReference": external_reference,
-                "callback": {"successUrl": callback_url, "autoRedirect": True},
-            },
+            json=payload,
         )
         subscription_id = str(subscription.get("id") or "").strip()
         if not subscription_id:

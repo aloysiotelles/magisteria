@@ -555,6 +555,10 @@ def test_asaas_subscription_contains_monthly_terms(monkeypatch):
         "autoRedirect": True,
     }
 
+    service.enable_callback = False
+    asyncio.run(service.create_subscription("cus_123", "mag-reference-2"))
+    assert "callback" not in captured["payload"]
+
 
 def test_asaas_checkout_and_webhook_control_premium(tmp_path: Path, monkeypatch):
     repo = AuthRepository(tmp_path / "magisteria.sqlite")

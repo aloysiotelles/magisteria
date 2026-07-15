@@ -26,7 +26,7 @@ from services.asaas_service import AsaasError, AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -58,6 +58,7 @@ asaas_service = AsaasService(
     settings.APP_PUBLIC_URL,
     settings.ASAAS_API_BASE_URL,
     settings.ASAAS_BILLING_TYPE,
+    settings.ASAAS_CALLBACK_ENABLED,
 )
 index_lock = asyncio.Lock()
 indexing_state = {
@@ -188,14 +189,18 @@ def _asaas_internal_status(provider_status: str, event_type: str = "") -> str:
     event = event_type.strip().upper()
     if event == "PAYMENT_DELETED":
         return "cancelled"
-    if event == "PAYMENT_REFUNDED" or status in {"REFUNDED", "REFUND_IN_PROGRESS"}:
+    if ("REFUND" in event and event != "PAYMENT_REFUND_DENIED") or status in {
+        "REFUNDED", "REFUND_IN_PROGRESS", "PARTIALLY_REFUNDED"
+    }:
         return "refunded"
     if "CHARGEBACK" in event or "CHARGEBACK" in status:
         return "charged_back"
     if status in {"CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"}:
         return "approved"
-    if event == "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED":
+    if event in {"PAYMENT_CREDIT_CARD_CAPTURE_REFUSED", "PAYMENT_REPROVED_BY_RISK_ANALYSIS"}:
         return "rejected"
+    if event == "PAYMENT_RECEIVED_IN_CASH_UNDONE":
+        return "cancelled"
     return status.lower() or "unknown"
 
 
