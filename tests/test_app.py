@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from types import SimpleNamespace
 import asyncio
@@ -30,9 +31,13 @@ from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 
 def authenticated_client() -> TestClient:
     client = TestClient(application.app)
-    response = client.post("/login", data={"email": "Admin", "senha": "3510"})
-    assert response.status_code == 200
-    return client
+    if not application.auth_repository.find_user_by_login("Admin"):
+        application.auth_repository.ensure_admin("AdminTest3510")
+    for password in ("AdminTest3510", "3510"):
+        response = client.post("/login", data={"email": "Admin", "senha": password})
+        if response.url.path == "/":
+            return client
+    raise AssertionError("Nao foi possivel autenticar o administrador de teste.")
 
 
 def create_free_user(client: TestClient, email: str = "teste@exemplo.com", password: str = "Senha123") -> None:
@@ -1071,8 +1076,8 @@ def test_rag_diagnostics_redacts_and_persists_trace(tmp_path: Path):
     )
 
     item = repository.recent(1)[0]
-    assert "pessoa@example.com" not in item["query_text"]
-    assert "12345678900" not in item["query_text"]
+    assert item["query_text"] == ""
+    assert item["normalized_query"] == ""
     assert item["trace"]["candidate_counts"]["lexical_exact"] == 4
 
 
@@ -1215,8 +1220,8 @@ def test_password_protects_application_and_health_is_public():
     client = TestClient(application.app)
     assert client.get("/health").status_code == 200
     assert client.get("/", follow_redirects=False).headers["location"] == "/login"
-    assert client.post("/login", data={"email": "Admin", "senha": "3510"}).status_code == 200
-    assert client.get("/").status_code == 200
+    admin = authenticated_client()
+    assert admin.get("/").status_code == 200
 
 
 def test_admin_can_clear_document_base(monkeypatch, tmp_path: Path):
@@ -1360,3 +1365,106 @@ def test_foreign_query_is_translated_before_retrieval_and_answered_in_selected_l
     assert calls["retrieval"] == "dignidade da pessoa humana"
     assert calls["answer"] == ("What is human dignity?", "en")
     assert response.json()["resposta"] == "Human dignity is inherent to every person."
+
+
+def test_admin_bootstrap_requires_an_explicit_strong_secret(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "without-admin.sqlite")
+    assert repository.find_user_by_login("Admin") is None
+
+    repository = AuthRepository(
+        tmp_path / "with-admin.sqlite",
+        admin_bootstrap_password="AdminTest3510",
+    )
+    admin = repository.authenticate("Admin", "AdminTest3510")
+    assert admin is not None
+    assert admin["role"] == "admin"
+    assert repository.authenticate("Admin", "3510") is None
+
+
+def test_password_change_revokes_every_existing_session(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "sessions.sqlite")
+    ok, _ = repository.create_user("Usuario Teste", "session@example.com", "SenhaForte1")
+    assert ok
+    user = repository.authenticate("session@example.com", "SenhaForte1")
+    first = repository.create_session(user["id"])
+    second = repository.create_session(user["id"])
+
+    ok, _ = repository.change_password(user["id"], "SenhaForte1", "NovaSenha2")
+
+    assert ok
+    assert repository.get_user_by_session(first) is None
+    assert repository.get_user_by_session(second) is None
+    assert repository.authenticate("session@example.com", "NovaSenha2") is not None
+
+
+def test_usage_reservations_are_atomic_under_concurrency(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "quota.sqlite")
+    ok, _ = repository.create_user("Usuario Teste", "quota@example.com", "SenhaForte1")
+    assert ok
+    user_id = repository.find_user_by_login("quota@example.com")["id"]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        query_results = list(executor.map(lambda _: repository.reserve_usage(user_id, "query"), range(8)))
+        script_results = list(executor.map(lambda _: repository.reserve_usage(user_id, "script"), range(4)))
+        slide_results = list(executor.map(lambda _: repository.reserve_usage(user_id, "presentation"), range(4)))
+
+    assert sum(allowed for allowed, _ in query_results) == 3
+    assert sum(allowed for allowed, _ in script_results) == 1
+    assert sum(allowed for allowed, _ in slide_results) == 1
+
+
+def test_ordinary_user_cannot_trigger_legacy_reindex(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "reindex.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repository)
+    client = TestClient(application.app)
+    create_free_user(client, email="reindex@example.com")
+
+    response = client.post("/indexar")
+
+    assert response.status_code == 403
+
+
+def test_mercado_pago_webhook_fails_closed_without_secret():
+    service = MercadoPagoService("token", "", Decimal("10.00"), "BRL", "https://app.example")
+    assert service.validate_webhook_signature("ts=1,v1=hash", "request-1", "payment-1") is False
+
+
+def test_slide_fallback_does_not_block_the_event_loop(monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+    from pptx import Presentation
+
+    service = PresentationService("", "modelo")
+    Presentation()
+
+    def image_bytes():
+        output = BytesIO()
+        Image.new("RGB", (64, 64), (30, 40, 50)).save(output, "JPEG")
+        output.seek(0)
+        return output
+
+    async def generated_image(*args, **kwargs):
+        return image_bytes()
+
+    def slow_fallback(*args, **kwargs):
+        time.sleep(0.08)
+        return image_bytes()
+
+    monkeypatch.setattr(service, "_generate_image_with_retry", generated_image)
+    monkeypatch.setattr(service, "_fallback_image", slow_fallback)
+    image_bytes()
+
+    async def scenario():
+        task = asyncio.create_task(
+            service.create_pptx(
+                "Tema",
+                [{"titulo": "Topico", "sintese": "Sintese", "pontos": ["Ponto"]}],
+            )
+        )
+        started = time.monotonic()
+        await asyncio.sleep(0.02)
+        heartbeat_elapsed = time.monotonic() - started
+        await task
+        return heartbeat_elapsed
+
+    assert asyncio.run(scenario()) < 0.06

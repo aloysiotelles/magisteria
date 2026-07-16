@@ -27,6 +27,7 @@ def _public_url() -> str:
 class Settings:
     APP_NAME = "MAGISTERIA"
     APP_PASSWORD = os.getenv("APP_PASSWORD", "DIVINA")
+    ADMIN_BOOTSTRAP_PASSWORD = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "").strip()
     DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", str(BASE_DIR / "Documentos"))).expanduser()
     VECTOR_DIR = Path(os.getenv("VECTOR_DIR", str(BASE_DIR / "banco_vetorial"))).expanduser()
     INDEX_FILE = VECTOR_DIR / "indice.json"
@@ -40,6 +41,7 @@ class Settings:
     MAX_CONTEXT_CHUNKS = int(os.getenv("MAX_CONTEXT_CHUNKS", "16"))
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.08"))
     RAG_DEBUG = os.getenv("RAG_DEBUG", "false").strip().lower() in {"1", "true", "yes", "sim"}
+    RAG_DIAGNOSTIC_RETENTION_DAYS = int(os.getenv("RAG_DIAGNOSTIC_RETENTION_DAYS", "14"))
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1100"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
     APP_PUBLIC_URL = _public_url()

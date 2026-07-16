@@ -179,14 +179,15 @@ class PresentationService:
         prs.slide_width, prs.slide_height = PptInches(13.333), PptInches(7.5)
         self._add_title_slide(prs, short_title, cover)
         for number, topic in enumerate(topics, 1):
-            image = self._fallback_image(
+            image = await asyncio.to_thread(
+                self._fallback_image,
                 {
                     **topic,
                     "visual_index": number + 1,
                     "visual_total": len(topics) + 2,
                     "visual_signature": self._visual_signature(number + 1),
                     "title_context": title,
-                }
+                },
             )
             self._add_topic_slide(prs, number, topic, image)
         self._add_closing_slide(prs, closing_phrase, closing)

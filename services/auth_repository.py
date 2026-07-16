@@ -19,8 +19,9 @@ COUPON_VALIDITY_PERIODS = {*COUPON_DURATIONS, "mes"}
 
 
 class AuthRepository:
-    def __init__(self, database_file: Path):
+    def __init__(self, database_file: Path, admin_bootstrap_password: str = ""):
         self.database_file = database_file
+        self.admin_bootstrap_password = admin_bootstrap_password.strip()
         self.database_file.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
@@ -127,24 +128,22 @@ class AuthRepository:
                 db.execute(
                     "ALTER TABLE payment_orders ADD COLUMN provider TEXT NOT NULL DEFAULT 'mercado_pago'"
                 )
-        self.ensure_admin()
+        self.ensure_admin(self.admin_bootstrap_password)
 
-    def ensure_admin(self) -> None:
+    def ensure_admin(self, bootstrap_password: str = "") -> None:
+        """Create the administrator only from an explicit bootstrap secret."""
         admin = self.find_user_by_login("Admin")
-        password_hash = self.hash_password("3510")
+        if admin:
+            if admin["role"] != "admin":
+                raise RuntimeError("O login reservado Admin ja pertence a uma conta sem privilegio.")
+            return
+        if not bootstrap_password:
+            return
+        valid, message = self.validate_password_strength(bootstrap_password)
+        if not valid:
+            raise RuntimeError(f"ADMIN_BOOTSTRAP_PASSWORD invalida: {message}")
         now = self._now()
         with self._connect() as db:
-            if admin:
-                db.execute(
-                    """
-                    UPDATE users
-                    SET full_name = 'Administrador', role = 'admin', account_type = 'completa',
-                        subscription_status = 'ativa'
-                    WHERE id = ?
-                    """,
-                    (admin["id"],),
-                )
-                return
             db.execute(
                 """
                 INSERT INTO users (
@@ -152,7 +151,7 @@ class AuthRepository:
                     subscription_started_at, subscription_renews_at, created_at
                 ) VALUES (?, ?, ?, 'admin', 'completa', 'ativa', ?, ?, ?)
                 """,
-                ("Administrador", "Admin", password_hash, now, now, now),
+                ("Administrador", "Admin", self.hash_password(bootstrap_password), now, now, now),
             )
 
     def create_user(self, full_name: str, email: str, password: str) -> tuple[bool, str]:
@@ -723,6 +722,7 @@ class AuthRepository:
                 return False, message
 
             db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (self.hash_password(new_password), user_id))
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         return True, "Senha alterada com sucesso."
 
     def find_user_by_login(self, login: str) -> sqlite3.Row | None:
@@ -769,6 +769,59 @@ class AuthRepository:
                 db.execute("UPDATE users SET script_generation_count = script_generation_count + 1 WHERE id = ?", (user_id,))
             elif field == "presentation":
                 db.execute("UPDATE users SET presentation_generation_count = presentation_generation_count + 1 WHERE id = ?", (user_id,))
+
+    def reserve_usage(self, user_id: int, field: str) -> tuple[bool, str]:
+        """Reserve one unit of work in a single serialized transaction."""
+        if field not in {"query", "script", "presentation"}:
+            raise ValueError("Tipo de uso invalido.")
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                return False, "Usuario nao encontrado."
+            unlimited = (
+                user["role"] == "admin"
+                or user["account_type"] == "completa"
+                or user["subscription_status"] == "ativa"
+            )
+            if field == "query":
+                current = int(user["daily_query_count"] or 0) if user["last_query_date"] == today else 0
+                if not unlimited and current >= 3:
+                    return False, "A versao gratuita permite apenas 3 consultas por dia."
+                db.execute(
+                    "UPDATE users SET daily_query_count = ?, last_query_date = ? WHERE id = ?",
+                    (current + 1, today, user_id),
+                )
+            else:
+                column = "script_generation_count" if field == "script" else "presentation_generation_count"
+                current = int(user[column] or 0)
+                if not unlimited and current >= 1:
+                    label = "roteiro" if field == "script" else "slide"
+                    return False, f"A versao gratuita permite apenas 1 {label}."
+                db.execute(f"UPDATE users SET {column} = {column} + 1 WHERE id = ?", (user_id,))
+        return True, ""
+
+    def release_usage(self, user_id: int, field: str) -> None:
+        """Return a reservation when work fails before producing a result."""
+        if field not in {"query", "script", "presentation"}:
+            raise ValueError("Tipo de uso invalido.")
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if field == "query":
+                db.execute(
+                    """UPDATE users
+                       SET daily_query_count = MAX(daily_query_count - 1, 0)
+                       WHERE id = ? AND last_query_date = ?""",
+                    (user_id, today),
+                )
+            else:
+                column = "script_generation_count" if field == "script" else "presentation_generation_count"
+                db.execute(
+                    f"UPDATE users SET {column} = MAX({column} - 1, 0) WHERE id = ?",
+                    (user_id,),
+                )
 
     def list_users(self) -> list[dict]:
         with self._connect() as db:

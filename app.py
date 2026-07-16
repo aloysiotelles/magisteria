@@ -46,8 +46,15 @@ vector_store = LocalVectorStore(
     settings.CHUNK_OVERLAP,
 )
 answer_service = AnswerService(settings.OPENAI_API_KEY, settings.OPENAI_MODEL, settings.OPENAI_REVIEW_MODEL)
-auth_repository = AuthRepository(settings.APP_DATABASE_FILE)
-rag_diagnostics = RAGDiagnosticsRepository(settings.APP_DATABASE_FILE, settings.RAG_DEBUG)
+auth_repository = AuthRepository(
+    settings.APP_DATABASE_FILE,
+    admin_bootstrap_password=settings.ADMIN_BOOTSTRAP_PASSWORD,
+)
+rag_diagnostics = RAGDiagnosticsRepository(
+    settings.APP_DATABASE_FILE,
+    settings.RAG_DEBUG,
+    settings.RAG_DIAGNOSTIC_RETENTION_DAYS,
+)
 presentation_service = PresentationService(
     settings.OPENAI_API_KEY,
     settings.OPENAI_MODEL,
@@ -1012,7 +1019,7 @@ async def ask(payload: QuestionRequest, request: Request):
     if indexing_state["ativa"]:
         raise HTTPException(status_code=503, detail="A base documental ainda está sendo atualizada.")
     user = current_user(request)
-    allowed, message = auth_repository.can_use_query(user)
+    allowed, message = auth_repository.reserve_usage(user["id"], "query")
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
     question = payload.pergunta.strip()
@@ -1060,7 +1067,6 @@ async def ask(payload: QuestionRequest, request: Request):
             context_tokens=estimated_context_tokens(chunks),
         )
         raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
-    auth_repository.increment_usage(user["id"], "query")
     await asyncio.to_thread(
         rag_diagnostics.record, request_id, question, diagnostics,
         round((time.monotonic() - started) * 1000),
@@ -1084,7 +1090,7 @@ async def ask_stream(payload: QuestionRequest, request: Request):
     if indexing_state["ativa"]:
         raise HTTPException(status_code=503, detail="A base documental ainda está sendo atualizada.")
     user = current_user(request)
-    allowed, message = auth_repository.can_use_query(user)
+    allowed, message = auth_repository.reserve_usage(user["id"], "query")
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
 
@@ -1115,7 +1121,6 @@ async def ask_stream(payload: QuestionRequest, request: Request):
     history = [turn.model_dump() for turn in payload.historico]
     if chunks and not answer_service.api_key:
         raise HTTPException(status_code=503, detail="A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
-    auth_repository.increment_usage(user["id"], "query")
     async def events():
         yield json.dumps(
             {
@@ -1169,7 +1174,8 @@ async def ask_stream(payload: QuestionRequest, request: Request):
 
 
 @app.post("/indexar")
-async def index_documents():
+async def index_documents(request: Request):
+    require_admin(request)
     if index_lock.locked():
         raise HTTPException(status_code=409, detail="A base documental já está sendo atualizada.")
     status = await perform_indexing()
@@ -1179,7 +1185,7 @@ async def index_documents():
 @app.post("/criar-roteiro")
 async def create_script(payload: PresentationRequest, request: Request):
     user = current_user(request)
-    allowed, message = auth_repository.can_generate_presentation(user, "script")
+    allowed, message = auth_repository.reserve_usage(user["id"], "script")
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
     try:
@@ -1196,7 +1202,6 @@ async def create_script(payload: PresentationRequest, request: Request):
     except Exception as exc:
         logger.exception("Falha ao criar roteiro.")
         raise HTTPException(status_code=502, detail="Não foi possível criar o roteiro agora.") from exc
-    auth_repository.increment_usage(user["id"], "script")
     filename = safe_filename(payload.titulo, "roteiro.docx")
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -1204,7 +1209,7 @@ async def create_script(payload: PresentationRequest, request: Request):
 @app.post("/criar-slides")
 async def create_slides(payload: PresentationRequest, request: Request):
     user = current_user(request)
-    allowed, message = auth_repository.can_generate_presentation(user, "presentation")
+    allowed, message = auth_repository.reserve_usage(user["id"], "presentation")
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
     try:
@@ -1230,7 +1235,6 @@ async def create_slides(payload: PresentationRequest, request: Request):
     except Exception as exc:
         logger.exception("Falha ao criar apresentação.")
         raise HTTPException(status_code=502, detail="Não foi possível criar os slides com imagens agora.") from exc
-    auth_repository.increment_usage(user["id"], "presentation")
     filename = safe_filename(payload.titulo, "slides.pptx")
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
