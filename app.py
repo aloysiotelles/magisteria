@@ -26,7 +26,7 @@ from services.asaas_service import AsaasError, AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.6.6"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -136,7 +136,7 @@ PUBLIC_PATHS = {
     "/webhooks/asaas",
 }
 PUBLIC_PREFIXES = ("/static/",)
-FREE_CUPON_CODES = {code.strip() for code in os.getenv("FREE_ACCESS_COUPONS", "").split(",") if code.strip()}
+FREE_CUPON_CODES = {code.strip().upper() for code in os.getenv("FREE_ACCESS_COUPONS", "").split(",") if code.strip()}
 
 
 def current_user(request: Request) -> dict:
@@ -758,14 +758,17 @@ async def redeem_coupon(request: Request):
         payload = await request.json()
     except json.JSONDecodeError:
         payload = {}
-    code = str(payload.get("cupom", "")).strip()
+    code = str(payload.get("cupom", "")).strip().upper()
     if not code:
         raise HTTPException(status_code=400, detail="Informe o cupom.")
-    if not FREE_CUPON_CODES:
-        raise HTTPException(status_code=503, detail="Nenhum cupom está configurado.")
-    if code not in FREE_CUPON_CODES:
-        raise HTTPException(status_code=400, detail="Cupom inválido.")
-    auth_repository.apply_coupon_access(user["id"], code)
+    try:
+        auth_repository.redeem_coupon(user["id"], code)
+    except LookupError:
+        if code not in FREE_CUPON_CODES:
+            raise HTTPException(status_code=400, detail="Cupom inválido.")
+        auth_repository.apply_coupon_access(user["id"], code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     updated = auth_repository.get_user(user["id"])
     return {"mensagem": "Acesso completo liberado pelo cupom.", "usuario": subscription_summary(dict(updated))}
 
@@ -1079,6 +1082,43 @@ async def documents():
 async def admin_statistics(request: Request):
     require_admin(request)
     return {"usuarios": auth_repository.list_users()}
+
+
+@app.get("/admin/cupons")
+async def admin_coupons(request: Request):
+    require_admin(request)
+    return {"cupons": auth_repository.list_coupons()}
+
+
+@app.post("/admin/cupons")
+async def admin_create_coupon(payload: dict, request: Request):
+    admin = require_admin(request)
+    try:
+        coupon = auth_repository.create_coupon(
+            str(payload.get("cupom") or ""),
+            str(payload.get("validade") or ""),
+            admin["id"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"mensagem": "Cupom criado com sucesso.", "cupom": coupon}
+
+
+@app.post("/admin/assinatura/revogar-cupom")
+async def admin_revoke_coupon_access(payload: dict, request: Request):
+    admin = require_admin(request)
+    try:
+        user_id = int(payload.get("usuario_id"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Usuário inválido.") from exc
+    try:
+        updated = auth_repository.revoke_coupon_access(user_id, admin["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "mensagem": "Acesso completo concedido por cupom revogado.",
+        "usuario": subscription_summary(updated),
+    }
 
 
 @app.post("/admin/assinatura/controle-gratuito")

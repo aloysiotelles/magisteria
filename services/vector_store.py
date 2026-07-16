@@ -20,6 +20,10 @@ QUERY_STOPWORDS = {
     "diz", "dizem", "fala", "falam", "trata", "tratam", "explique", "explica", "catolica", "catolico",
     "compendio", "fonte", "obra", "livro",
 }
+INDEX_CONTEXT_STOPWORDS = QUERY_STOPWORDS | {
+    "ainda", "assim", "deus", "homem", "homens", "meio", "nao", "nem", "nos",
+    "pelo", "pode", "poder", "ser", "sob",
+}
 SOURCE_HINTS = {
     "catecismo": ("catecismo",), "cic": ("catecismo",),
     "biblia": ("biblia",), "sagrada escritura": ("biblia",), "missal": ("missal",),
@@ -69,6 +73,16 @@ ORDERED_SOURCES = (
     ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 2),
     ("Suma Teológica", ("suma teologica", "suma-teologica", "suma"), 2),
 )
+SINGLE_TERM_ORDERED_SOURCES = (
+    ("Catecismo da Igreja Católica", ("catecismo",), 5),
+    ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 3),
+    ("A Fé Explicada", ("a fe explicada", "fe explicada"), 3),
+    ("Bíblia Ave Maria — citações bíblicas", ("biblia ave maria", "biblia"), 2),
+    ("Compêndio Vaticano II", ("compendio vaticano ii", "vaticano ii"), 2),
+    ("Compêndio da Doutrina Social da Igreja", ("doutrina-social", "doutrina social"), 2),
+    ("Suma Teológica", ("suma teologica", "suma-teologica", "suma"), 2),
+)
+NOMINAL_INDEX_SOURCES = SINGLE_TERM_ORDERED_SOURCES[:3]
 BIBLE_QUERY_EXPANSIONS = {
     "caridade": {"amor", "amar", "amou"}, "sacramento": {"batismo", "eucaristia", "ceia"},
     "sacramentos": {"batismo", "eucaristia", "ceia"}, "perdao": {"perdoar", "misericordia"},
@@ -200,17 +214,39 @@ class LocalVectorStore:
             expanded.update(BIBLE_QUERY_EXPANSIONS.get(term, set()))
         return terms, expanded
 
-    def _candidate_rows(self, query: str, limit: int | None = None, preferred: tuple[str, ...] = ()) -> list[dict]:
+    def _candidate_rows(
+        self,
+        query: str,
+        limit: int | None = None,
+        preferred: tuple[str, ...] = (),
+        additional_terms: set[str] | None = None,
+    ) -> list[dict]:
         _, expanded = self._query_terms(query, preferred)
+        expanded.update(additional_terms or set())
         if not expanded:
             return []
         limit = limit or (1200 if preferred else 2000)
         expression = " OR ".join(f"{term}*" for term in sorted(expanded))
         with self._connect() as db:
-            rows = db.execute(
-                "SELECT id,source,location,text,bm25(chunks) rank FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
-                (expression, limit),
-            ).fetchall()
+            if preferred:
+                sources = [
+                    row[0] for row in db.execute("SELECT source FROM files")
+                    if self._source_matches(self._normalize(row[0]), preferred)
+                ]
+                if not sources:
+                    return []
+                placeholders = ",".join("?" for _ in sources)
+                rows = db.execute(
+                    "SELECT id,source,location,text,bm25(chunks) rank FROM chunks "
+                    f"WHERE chunks MATCH ? AND source IN ({placeholders}) ORDER BY rank LIMIT ?",
+                    (expression, *sources, limit),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id,source,location,text,bm25(chunks) rank "
+                    "FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
+                    (expression, limit),
+                ).fetchall()
         candidates = []
         for position, row in enumerate(rows, 1):
             item = dict(row)
@@ -224,29 +260,63 @@ class LocalVectorStore:
         preferred = source_filter or self._preferred_sources(normalized_query)
         terms, expanded_terms = self._query_terms(query, preferred)
         index_guidance = self._index_guidance(query, preferred, excluded_sources)
+        single_term = self._single_query_term(query)
+        context_terms = self._guidance_context_terms(terms, index_guidance) if single_term else set()
+        expanded_terms.update(context_terms)
         ranked = []
-        for row in self._candidate_rows(query, preferred=preferred):
+        candidate_rows = self._candidate_rows(query, preferred=preferred, additional_terms=context_terms)
+        known_ids = {row["id"] for row in candidate_rows}
+        if single_term and not preferred:
+            for _, hints, quota in NOMINAL_INDEX_SOURCES:
+                for row in self._candidate_rows(
+                    query,
+                    limit=max(quota * 40, 120),
+                    preferred=hints,
+                    additional_terms=context_terms,
+                ):
+                    if row["id"] not in known_ids:
+                        row["fts_position"] = len(candidate_rows) + 1
+                        candidate_rows.append(row)
+                        known_ids.add(row["id"])
+        if single_term:
+            for row in self._guided_candidate_rows(index_guidance, preferred):
+                if row["id"] not in known_ids:
+                    row["fts_position"] = len(candidate_rows) + 1
+                    candidate_rows.append(row)
+                    known_ids.add(row["id"])
+        for row in candidate_rows:
             source_norm = self._normalize(row["source"])
             if preferred and not self._source_matches(source_norm, preferred):
                 continue
-            if excluded_sources and any(hint in source_norm for hint in excluded_sources):
+            if self._source_is_excluded(row["source"], excluded_sources):
                 continue
             text_norm = self._normalize(row["text"])
             text_terms = set(TOKEN_PATTERN.findall(text_norm))
             coverage = len(terms & text_terms) / max(len(terms), 1)
             expanded_hits = len(expanded_terms & text_terms)
-            if coverage < minimum_score and expanded_hits == 0:
-                continue
             frequency = sum(text_norm.count(term) for term in expanded_terms)
             fts_bonus = max(0, (320 - int(row.get("fts_position", 320))) / 320) * 0.35
             heading_bonus = 0.12 if any(term in text_norm[:260] for term in terms | expanded_terms) else 0
             source_bonus = 0.22 if preferred else 0
             anchor_bonus = self._topic_anchor_bonus(terms, self._paragraph_numbers(text_norm))
             index_bonus = self._index_guidance_bonus(source_norm, text_norm, index_guidance)
+            if coverage < minimum_score and expanded_hits == 0 and index_bonus == 0:
+                continue
             note_penalty = self._note_fragment_penalty(text_norm)
             score = coverage + min(frequency, 10) * 0.035 + fts_bonus + heading_bonus + source_bonus + anchor_bonus + index_bonus - note_penalty
-            ranked.append({**row, "score": round(score, 4)})
+            ranked.append({
+                **row,
+                "score": round(score, 4),
+                "_index_chunk": self._looks_like_index_chunk(source_norm, row["text"]),
+            })
         ranked.sort(key=lambda item: (item["score"], -int(item.get("fts_position", 9999))), reverse=True)
+        substantive_sources = {item["source"] for item in ranked if not item["_index_chunk"]}
+        ranked = [
+            item for item in ranked
+            if not item["_index_chunk"] or item["source"] not in substantive_sources
+        ]
+        for item in ranked:
+            item.pop("_index_chunk", None)
         return self._diversify(ranked, limit, bool(preferred))
 
     def search_ordered(
@@ -256,22 +326,28 @@ class LocalVectorStore:
         minimum_score: float = 0.08,
         excluded_sources: tuple[str, ...] = (),
     ) -> list[dict]:
-        candidates = self.search(query, limit=300, minimum_score=minimum_score, excluded_sources=excluded_sources)
-        buckets = [[] for _ in range(len(ORDERED_SOURCES) + 1)]
+        source_order = SINGLE_TERM_ORDERED_SOURCES if self._single_query_term(query) else ORDERED_SOURCES
+        candidates = self.search(
+            query,
+            limit=300,
+            minimum_score=minimum_score,
+            excluded_sources=excluded_sources,
+        )
+        buckets = [[] for _ in range(len(source_order) + 1)]
         for item in candidates:
             normalized = self._normalize(item["source"])
-            bucket = len(ORDERED_SOURCES)
-            for index, (_, hints, _) in enumerate(ORDERED_SOURCES):
+            bucket = len(source_order)
+            for index, (_, hints, _) in enumerate(source_order):
                 if any(self._normalize(hint) in normalized for hint in hints):
                     bucket = index
                     break
             buckets[bucket].append(item)
         selected = []
-        for order, ((label, _, quota), bucket) in enumerate(zip(ORDERED_SOURCES, buckets), 1):
+        for order, ((label, _, quota), bucket) in enumerate(zip(source_order, buckets), 1):
             selected.extend({**item, "ordem": order, "categoria": label} for item in bucket[:quota])
         remaining = max(limit - len(selected), 0)
         selected.extend(
-            {**item, "ordem": len(ORDERED_SOURCES) + 1, "categoria": "Demais documentos"}
+            {**item, "ordem": len(source_order) + 1, "categoria": "Demais documentos"}
             for item in buckets[-1][:remaining]
         )
         return self._enrich_references(selected[:limit])
@@ -303,6 +379,10 @@ class LocalVectorStore:
         referencias internas e depois usa essas referencias para favorecer os trechos
         doutrinais correspondentes.
         """
+        single_term = self._single_query_term(query)
+        if single_term:
+            return self._nominal_index_guidance(single_term, preferred, excluded_sources)
+
         terms, expanded_terms = self._query_terms(query, preferred)
         lookup_terms = terms | expanded_terms
         if not lookup_terms:
@@ -341,6 +421,143 @@ class LocalVectorStore:
                 if 4 <= len(heading) <= 90:
                     item["headings"].add(heading)
         return guidance
+
+    def _nominal_index_guidance(
+        self,
+        term: str,
+        preferred: tuple[str, ...] = (),
+        excluded_sources: tuple[str, ...] = (),
+    ) -> dict[str, dict[str, set[str]]]:
+        """Procura uma palavra isolada nos três índices, na ordem editorial."""
+        expression = f'"{term}"'
+        guidance: dict[str, dict[str, set[str]]] = {}
+        with self._connect() as db:
+            sources = [row[0] for row in db.execute("SELECT source FROM files ORDER BY source COLLATE NOCASE")]
+            for _, hints, _ in NOMINAL_INDEX_SOURCES:
+                if preferred and not any(self._source_matches(self._normalize(hint), preferred) for hint in hints):
+                    continue
+                matching_sources = [
+                    source for source in sources
+                    if self._source_matches(self._normalize(source), hints)
+                    and not self._source_is_excluded(source, excluded_sources)
+                ]
+                for source in matching_sources:
+                    rows = db.execute(
+                        "SELECT source,location,text,bm25(chunks) rank "
+                        "FROM chunks WHERE chunks MATCH ? AND source = ? ORDER BY rank LIMIT 700",
+                        (expression, source),
+                    ).fetchall()
+                    self._collect_index_guidance(rows, {term}, guidance)
+        return {
+            source: item for source, item in guidance.items()
+            if any(item.values())
+        }
+
+    def _collect_index_guidance(
+        self,
+        rows,
+        lookup_terms: set[str],
+        guidance: dict[str, dict[str, set[str]]],
+    ) -> None:
+        for row in rows:
+            source = row["source"]
+            source_norm = self._normalize(source)
+            text = row["text"]
+            if not self._looks_like_index_chunk(source_norm, text):
+                continue
+            item = guidance.setdefault(
+                source_norm,
+                {"paragraphs": set(), "pages": set(), "codes": set(), "headings": set()},
+            )
+            for line in text.splitlines():
+                line_norm = self._normalize(line)
+                if not line_norm.strip() or not any(
+                    re.search(rf"\b{re.escape(term)}\b", line_norm) for term in lookup_terms
+                ):
+                    continue
+                item["paragraphs"].update(self._extract_index_paragraphs(line_norm))
+                item["pages"].update(self._extract_index_pages(source_norm, line_norm))
+                item["codes"].update(code.lower() for code in SYSTEMATIC_INDEX_CODE_PATTERN.findall(line))
+                heading = re.sub(r"\.{2,}.*$", "", line_norm)
+                heading = re.sub(r"\b\d{1,4}[a-z]?\b", "", heading)
+                heading = re.sub(r"\s+", " ", heading).strip(" .;:-")
+                if 4 <= len(heading) <= 90:
+                    item["headings"].add(heading)
+
+    def _guided_candidate_rows(
+        self,
+        guidance: dict[str, dict[str, set[str]]],
+        preferred: tuple[str, ...] = (),
+    ) -> list[dict]:
+        """Recupera o conteúdo apontado pelo sumário, mesmo sem repetir o termo."""
+        candidates: list[dict] = []
+        with self._connect() as db:
+            for source_norm, item in guidance.items():
+                if preferred and not self._source_matches(source_norm, preferred):
+                    continue
+                source_row = db.execute(
+                    "SELECT source FROM files WHERE lower(source) = lower(?)",
+                    (source_norm,),
+                ).fetchone()
+                if source_row is None:
+                    source_row = next(
+                        (row for row in db.execute("SELECT source FROM files") if self._normalize(row[0]) == source_norm),
+                        None,
+                    )
+                if source_row is None:
+                    continue
+                source = source_row[0]
+                lookup_tokens = set(list(item["paragraphs"])[:120])
+                lookup_tokens.update(list(item["pages"])[:30])
+                for code in item["codes"]:
+                    lookup_tokens.update(token for token in TOKEN_PATTERN.findall(code) if len(token) >= 2)
+                lookup_tokens.update(list(self._guidance_context_terms(set(), {source_norm: item}))[:30])
+                if not lookup_tokens:
+                    continue
+                expression = " OR ".join(f'"{token}"' for token in sorted(lookup_tokens))
+                rows = db.execute(
+                    "SELECT id,source,location,text,bm25(chunks) rank "
+                    "FROM chunks WHERE chunks MATCH ? AND source = ? ORDER BY rank LIMIT 240",
+                    (expression, source),
+                ).fetchall()
+                for row in rows:
+                    row_dict = dict(row)
+                    text_norm = self._normalize(row_dict["text"])
+                    if self._looks_like_index_chunk(source_norm, row_dict["text"]):
+                        continue
+                    if self._index_guidance_bonus(source_norm, text_norm, guidance) > 0:
+                        candidates.append(row_dict)
+        return candidates
+
+    @classmethod
+    def _guidance_context_terms(
+        cls,
+        query_terms: set[str],
+        guidance: dict[str, dict[str, set[str]]],
+    ) -> set[str]:
+        counts: Counter[str] = Counter()
+        for item in guidance.values():
+            for heading in item["headings"]:
+                counts.update(
+                    term for term in TOKEN_PATTERN.findall(cls._normalize(heading))
+                    if len(term) > 3
+                    and term not in INDEX_CONTEXT_STOPWORDS
+                    and term not in query_terms
+                    and not any(character.isdigit() for character in term)
+                )
+        return {term for term, _ in counts.most_common(18)}
+
+    @classmethod
+    def _single_query_term(cls, query: str) -> str | None:
+        tokens = TOKEN_PATTERN.findall(cls._normalize(query).strip())
+        if len(tokens) != 1 or tokens[0] in QUERY_STOPWORDS or len(tokens[0]) <= 2:
+            return None
+        return tokens[0]
+
+    @classmethod
+    def _source_is_excluded(cls, source: str, excluded_sources: tuple[str, ...]) -> bool:
+        source_norm = cls._normalize(source)
+        return any(cls._normalize(excluded) in source_norm for excluded in excluded_sources)
 
     @staticmethod
     def _extract_index_paragraphs(line_norm: str) -> set[str]:

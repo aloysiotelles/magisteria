@@ -73,7 +73,7 @@ h1 span, footer span { color: var(--red); }
 .slogan { max-width: 660px; margin: 12px 0 0; color: var(--forest); font-size: .78rem; font-weight: 700; letter-spacing: .035em; line-height: 1.5; }
 .slogan strong { color: var(--red); }
 
-.search-card, .content-card, .followup-card {
+.search-card, .content-card {
   background: rgba(255, 253, 247, .94);
   border: 1px solid var(--line);
   border-radius: 22px;
@@ -129,9 +129,10 @@ textarea::placeholder { color: #929990; }
 .privacy-note::before { content: "◆"; position: absolute; left: 2px; color: var(--gold); font-size: .7rem; }
 
 .result-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr); gap: 20px; margin-top: 22px; }
-.followup-card { margin-top: 20px; padding: clamp(22px, 4vw, 34px); }
-.followup-card h2 { margin: 0 0 18px; color: var(--forest); font-size: clamp(1.55rem, 3vw, 2rem); }
-.followup-card textarea { min-height: 96px; }
+.followup-inline { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid rgba(139, 94, 52, .24); }
+.followup-heading { margin-bottom: 14px; }
+.followup-heading h3 { margin: .25rem 0 0; color: var(--forest); font-size: 1.2rem; }
+.followup-inline textarea { min-height: 96px; }
 .content-card { padding: 28px; }
 .card-title { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 18px; }
 .card-title h2 { margin: 0; color: var(--forest); font-size: 1.65rem; }
@@ -239,6 +240,10 @@ textarea::placeholder { color: #929990; }
 .payment-document-field small { color: var(--muted); font-weight: 500; line-height: 1.4; }
 .payment-link { display: inline-flex; width: fit-content; margin-top: 10px; text-decoration: none; }
 .coupon-form { margin-top: 6px; }
+.coupon-admin-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(160px, .55fr) auto; gap: 12px; align-items: end; margin-bottom: 18px; }
+.coupon-admin-form label { display: grid; gap: 7px; color: var(--forest); font-size: .84rem; font-weight: 700; }
+.coupon-admin-form input, .coupon-admin-form select { box-sizing: border-box; width: 100%; min-height: 44px; padding: 11px 13px; border: 1px solid #d8d2c2; border-radius: 10px; background: white; color: var(--ink); font: inherit; }
+.coupon-admin-form input:focus, .coupon-admin-form select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 4px rgba(189, 133, 21, .10); }
 .admin-box { background: #f4efe2; }
 .auth-form { display: grid; gap: 14px; }
 .auth-form label { display: grid; gap: 7px; color: var(--forest); font-size: .84rem; font-weight: 700; }
@@ -273,6 +278,7 @@ footer { padding: 28px 0 34px; color: #687269; font-size: .76rem; text-align: ce
   .section-heading { align-items: flex-start; flex-direction: column; }
   .result-grid { grid-template-columns: 1fr; }
   .actions { flex-direction: column; }
+  .coupon-admin-form { grid-template-columns: 1fr; align-items: stretch; }
   .button { width: 100%; }
   .utility-nav { justify-content: center; margin-bottom: 0; }
   .upload-form { grid-template-columns: 1fr; }
@@ -282,5 +288,5 @@ footer { padding: 28px 0 34px; color: #687269; font-size: .76rem; text-align: ce
 @media (max-width: 430px) {
   .hero { flex-direction: column; text-align: center; }
   .logo { width: 112px; height: 112px; }
-  .search-card, .content-card, .followup-card { border-radius: 16px; }
+  .search-card, .content-card { border-radius: 16px; }
 }

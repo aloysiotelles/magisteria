@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 import asyncio
+from datetime import datetime
 from decimal import Decimal
 import hashlib
 import hmac
@@ -17,6 +18,7 @@ from services.answer_service import AnswerService, NOT_FOUND_MESSAGE, format_abn
 from services.auth_repository import AuthRepository
 from services.vector_store import LocalVectorStore
 from services.document_loader import load_document
+from services.editorial_style import HOMILY_CORPUS_PROFILE
 from services.presentation_service import PresentationService, safe_filename
 from services.asaas_service import AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
@@ -118,6 +120,58 @@ def test_editorial_source_order(tmp_path: Path):
         "Suma Teológica",
     ]
     assert categories[-1] == "Demais documentos"
+
+
+def test_single_word_uses_nominal_index_hierarchy(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    fixtures = {
+        "Catecismo da Igreja Católica.txt": (
+            "SUMÁRIO\nPECADO ................................ 1846-1876\n\n"
+            "1846. A misericórdia divina vence toda transgressão humana."
+        ),
+        "compendio-dos-simbolos-definicoes-e-declaracoes-de-fe-e-moral.txt": (
+            "ÍNDICE SISTEMÁTICO\nPecado: natureza D:1c\n\n"
+            "D:1c A desobediência moral rompe a comunhão com Deus."
+        ),
+        "A Fé Explicada.txt": (
+            "SUMÁRIO\nO que é o pecado? ........................ 76\n\n"
+            "[p. 76] A recusa consciente do amor divino fere a vida espiritual."
+        ),
+        "Bíblia Ave Maria.txt": "O pecado entrou no mundo, mas a graça foi abundante.",
+    }
+    for name, text in fixtures.items():
+        (documents / name).write_text(text, encoding="utf-8")
+    store = LocalVectorStore(documents, tmp_path / "indice.json", 105, 5)
+    store.index_documents()
+
+    results = store.search_ordered("PECADO", minimum_score=0)
+
+    categories = list(dict.fromkeys(item["categoria"] for item in results))
+    assert categories[:3] == [
+        "Catecismo da Igreja Católica",
+        "Compêndio dos símbolos, definições e declarações",
+        "A Fé Explicada",
+    ]
+    assert any("transgressão humana" in item["text"] for item in results)
+    assert any("desobediência moral" in item["text"] for item in results)
+    assert any("recusa consciente" in item["text"] for item in results)
+
+
+def test_single_word_searches_remaining_documents_before_negative(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    (documents / "Documento complementar.txt").write_text(
+        "A perseverança sustenta a esperança nas provações.",
+        encoding="utf-8",
+    )
+    store = LocalVectorStore(documents, tmp_path / "indice.json", 300, 40)
+    store.index_documents()
+
+    results = store.search_ordered("PERSEVERANÇA", minimum_score=0.08)
+
+    assert results
+    assert results[0]["categoria"] == "Demais documentos"
 
 
 def test_editorial_bonus_does_not_make_irrelevant_chunk_relevant(tmp_path: Path):
@@ -262,10 +316,23 @@ def test_answer_prompt_requires_consolidated_text():
     assert "uma única síntese consolidada" in instructions
     assert "Não informe nem liste as fontes no corpo" in instructions
     assert "A Fé Explicada" in instructions
-
-
+    assert "PADRÃO HOMILÉTICO DE SÃO JOÃO PAULO II" in instructions
+    assert "português brasileiro contemporâneo" in instructions
+    assert "O padrão rege somente a forma" in instructions
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in instructions
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in request["input"]
+
+
+def test_homily_corpus_profile_and_presentation_standard():
+    instructions = PresentationService._plan_instructions()
+
+    assert HOMILY_CORPUS_PROFILE["documents"] == 1093
+    assert HOMILY_CORPUS_PROFILE["period"] == "1978-2005"
+    assert HOMILY_CORPUS_PROFILE["words"] == 1_662_755
+    assert "PADRÃO HOMILÉTICO DE SÃO JOÃO PAULO II" in instructions
+    assert "anúncio do tema, aprofundamento" in instructions
+    assert "títulos como afirmações vivas e sóbrias" in instructions
+    assert "sem acrescentar conteúdo novo" in instructions
 
 
 def test_free_plan_limits_queries_and_presentations(tmp_path: Path, monkeypatch):
@@ -396,6 +463,83 @@ def test_coupon_and_verified_payment_activate_full_access(tmp_path: Path, monkey
     )
     assert refund.status_code == 200
     assert repo.find_user_by_login("mp@exemplo.com")["account_type"] == "gratuita"
+
+
+def test_admin_creates_managed_coupon_user_redeems_and_admin_revokes(tmp_path: Path, monkeypatch):
+    repo = AuthRepository(tmp_path / "magisteria.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repo)
+    monkeypatch.setattr(application, "FREE_CUPON_CODES", set())
+    admin = authenticated_client()
+
+    page = admin.get("/")
+    assert 'id="coupons-button"' in page.text
+    created = admin.post("/admin/cupons", json={"cupom": "CATEQUESE", "validade": "semana"})
+    assert created.status_code == 200
+    assert created.json()["cupom"]["code"] == "CATEQUESE"
+    assert created.json()["cupom"]["validity_period"] == "semana"
+    assert created.json()["cupom"]["status"] == "ativo"
+    coupon_data = created.json()["cupom"]
+    assert (datetime.fromisoformat(coupon_data["valid_until"]) - datetime.fromisoformat(coupon_data["created_at"])).days == 7
+
+    user_client = TestClient(application.app)
+    create_free_user(user_client, email="promocao@exemplo.com")
+    redeemed = user_client.post("/assinatura/cupom", json={"cupom": "catequese"})
+    assert redeemed.status_code == 200
+    assert redeemed.json()["usuario"]["is_full_access"] is True
+
+    statistics = admin.get("/admin/estatisticas").json()["usuarios"]
+    promoted_user = next(user for user in statistics if user["email"] == "promocao@exemplo.com")
+    assert promoted_user["coupon_code"] == "CATEQUESE"
+    assert promoted_user["can_revoke_coupon"] is True
+
+    revoked = admin.post(
+        "/admin/assinatura/revogar-cupom",
+        json={"usuario_id": promoted_user["id"]},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["usuario"]["is_full_access"] is False
+    assert user_client.get("/assinatura").json()["usuario"]["plano"] == "gratuito"
+
+    coupons = admin.get("/admin/cupons").json()["cupons"]
+    assert coupons[0]["total_redemptions"] == 1
+    assert coupons[0]["active_redemptions"] == 0
+
+
+def test_managed_coupon_validation_expiration_and_reuse(tmp_path: Path, monkeypatch):
+    repo = AuthRepository(tmp_path / "magisteria.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repo)
+    monkeypatch.setattr(application, "FREE_CUPON_CODES", set())
+    admin = authenticated_client()
+
+    assert admin.post("/admin/cupons", json={"cupom": "duas palavras", "validade": "dia"}).status_code == 400
+    assert admin.post("/admin/cupons", json={"cupom": "PROMO", "validade": "ano"}).status_code == 400
+    assert admin.post("/admin/cupons", json={"cupom": "PROMO", "validade": "dia"}).status_code == 200
+    assert admin.post("/admin/cupons", json={"cupom": "promo", "validade": "semana"}).status_code == 400
+    monthly = admin.post("/admin/cupons", json={"cupom": "MENSAL", "validade": "mes"}).json()["cupom"]
+    monthly_created = datetime.fromisoformat(monthly["created_at"])
+    monthly_expiration = datetime.fromisoformat(monthly["valid_until"])
+    assert (monthly_expiration.year, monthly_expiration.month) == (
+        (monthly_created.year + 1, 1) if monthly_created.month == 12
+        else (monthly_created.year, monthly_created.month + 1)
+    )
+
+    first_user = TestClient(application.app)
+    create_free_user(first_user, email="primeiro@exemplo.com")
+    assert first_user.post("/assinatura/cupom", json={"cupom": "PROMO"}).status_code == 200
+    first_id = repo.find_user_by_login("primeiro@exemplo.com")["id"]
+    admin_id = repo.find_user_by_login("Admin")["id"]
+    repo.revoke_coupon_access(first_id, admin_id)
+    reused = first_user.post("/assinatura/cupom", json={"cupom": "PROMO"})
+    assert reused.status_code == 400
+    assert "já foi usado" in reused.json()["detail"]
+
+    with repo._connect() as db:
+        db.execute("UPDATE coupons SET valid_until = ? WHERE code = 'PROMO'", ("2020-01-01T00:00:00+00:00",))
+    second_user = TestClient(application.app)
+    create_free_user(second_user, email="segundo@exemplo.com")
+    expired = second_user.post("/assinatura/cupom", json={"cupom": "PROMO"})
+    assert expired.status_code == 400
+    assert "vencido" in expired.json()["detail"]
 
 
 def test_payment_with_wrong_amount_is_not_linked(tmp_path: Path, monkeypatch):
@@ -752,6 +896,17 @@ def test_routes_and_closed_base_behavior(monkeypatch):
     assert stream_response.status_code == 200
     assert '"tipo": "texto"' in stream_response.text
     assert NOT_FOUND_MESSAGE in stream_response.text
+
+
+def test_followup_prompt_is_inside_answer_below_presentation_buttons():
+    client = authenticated_client()
+
+    page = client.get("/").text
+    answer_card = page.split('<article class="content-card answer-card">', 1)[1].split("</article>", 1)[0]
+
+    assert page.count('id="followup-panel"') == 1
+    assert answer_card.index('id="presentation-module"') < answer_card.index('id="followup-panel"')
+    assert answer_card.index('id="create-slides-button"') < answer_card.index('id="followup-slot"')
 
 
 def test_question_validation():

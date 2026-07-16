@@ -6,6 +6,8 @@ import re
 
 from openai import AsyncOpenAI
 
+from services.editorial_style import JOHN_PAUL_II_WRITING_STANDARD
+
 
 ABSOLUTE_RULE = (
     "Responda somente com base nos trechos fornecidos. Se os trechos não forem suficientes, "
@@ -141,6 +143,8 @@ class AnswerService:
             "Use action='rewrite' quando a ideia central estiver correta, mas a formulação precise ser mais cautelosa ou breve. "
             "Use action='block' somente quando houver extrapolação inequívoca, contradição, citação indevida, erro factual ou excesso de confiança evidente. "
             "Nesse caso, suggested_answer deve conter uma recusa educada ou uma versão muito conservadora."
+            f" Verifique também a forma segundo esta regra, sem bloquear uma resposta factual apenas por estilo: "
+            f"{JOHN_PAUL_II_WRITING_STANDARD}"
         )
         response = await self.client.responses.create(
             model=self.review_model,
@@ -223,9 +227,8 @@ class AnswerService:
                 f"REGRA ABSOLUTA: {ABSOLUTE_RULE} "
                 "Não use memória, conhecimento geral, inferências externas ou pesquisa na internet. "
                 "Não mencione fontes que não estejam nos trechos. "
-                "Escreva em português brasileiro, com tom acolhedor, sereno e próximo, sem parecer mecânico. "
-                "Quando houver AMOSTRAS DE ESTILO DAS HOMILIAS, aproxime o ritmo, a clareza pastoral, o apelo espiritual "
-                "e a forma exortativa dessas homilias. Use essas amostras apenas como modelo de escrita; não retire delas "
+                f"{JOHN_PAUL_II_WRITING_STANDARD} "
+                "Use as AMOSTRAS DE ESTILO DAS HOMILIAS apenas para calibrar ritmo e cadência; não retire delas "
                 "afirmações factuais para responder se elas não estiverem também apoiadas nos TRECHOS CADASTRADOS. "
                 "Comece diretamente pela resposta. Explique termos religiosos com simplicidade quando necessário. "
                 "Prefira parágrafos curtos e use uma lista apenas quando ela realmente facilitar a compreensão. "

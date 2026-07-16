@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -10,6 +11,11 @@ import sqlite3
 
 SESSION_DAYS = 30
 PASSWORD_ITERATIONS = 260_000
+COUPON_DURATIONS = {
+    "dia": timedelta(days=1),
+    "semana": timedelta(days=7),
+}
+COUPON_VALIDITY_PERIODS = {*COUPON_DURATIONS, "mes"}
 
 
 class AuthRepository:
@@ -95,6 +101,26 @@ class AuthRepository:
                     processed_at TEXT NOT NULL,
                     PRIMARY KEY(provider, event_id)
                 );
+                CREATE TABLE IF NOT EXISTS coupons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    validity_period TEXT NOT NULL,
+                    valid_until TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS coupon_redemptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    coupon_id INTEGER NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    redeemed_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    revoked_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    UNIQUE(coupon_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_user
+                    ON coupon_redemptions(user_id, revoked_at);
             """)
             columns = {row["name"] for row in db.execute("PRAGMA table_info(payment_orders)").fetchall()}
             if "provider" not in columns:
@@ -535,6 +561,121 @@ class AuthRepository:
             renews_at=None,
         )
 
+    def create_coupon(self, code: str, validity_period: str, created_by_user_id: int) -> dict:
+        normalized_code = self._normalize_coupon_code(code)
+        validity_period = validity_period.strip().lower()
+        if validity_period not in COUPON_VALIDITY_PERIODS:
+            raise ValueError("Escolha a validade de um dia, uma semana ou um mês.")
+        now = datetime.now(timezone.utc)
+        valid_until = self._coupon_valid_until(now, validity_period)
+        try:
+            with self._connect() as db:
+                cursor = db.execute(
+                    """
+                    INSERT INTO coupons(code, validity_period, valid_until, created_by_user_id, created_at)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (normalized_code, validity_period, valid_until.isoformat(), created_by_user_id, now.isoformat()),
+                )
+                coupon_id = cursor.lastrowid
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Já existe um cupom com essa palavra.") from exc
+        return next(coupon for coupon in self.list_coupons() if coupon["id"] == coupon_id)
+
+    def list_coupons(self) -> list[dict]:
+        now = datetime.now(timezone.utc)
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT coupons.id, coupons.code, coupons.validity_period, coupons.valid_until,
+                       coupons.is_active, coupons.created_at,
+                       COUNT(coupon_redemptions.id) AS total_redemptions,
+                       SUM(CASE WHEN coupon_redemptions.id IS NOT NULL
+                                    AND coupon_redemptions.revoked_at IS NULL THEN 1 ELSE 0 END) AS active_redemptions
+                FROM coupons
+                LEFT JOIN coupon_redemptions ON coupon_redemptions.coupon_id = coupons.id
+                GROUP BY coupons.id
+                ORDER BY coupons.created_at DESC
+                """
+            ).fetchall()
+        coupons = []
+        for row in rows:
+            item = dict(row)
+            valid_until = datetime.fromisoformat(item["valid_until"])
+            item["status"] = "ativo" if item["is_active"] and valid_until > now else "vencido"
+            item["total_redemptions"] = int(item["total_redemptions"] or 0)
+            item["active_redemptions"] = int(item["active_redemptions"] or 0)
+            coupons.append(item)
+        return coupons
+
+    def redeem_coupon(self, user_id: int, code: str) -> dict:
+        normalized_code = self._normalize_coupon_code(code)
+        now = datetime.now(timezone.utc)
+        with self._connect() as db:
+            coupon = db.execute(
+                "SELECT * FROM coupons WHERE code = ? COLLATE NOCASE",
+                (normalized_code,),
+            ).fetchone()
+            if coupon is None:
+                raise LookupError("Cupom inválido.")
+            if not coupon["is_active"] or datetime.fromisoformat(coupon["valid_until"]) <= now:
+                raise ValueError("Este cupom esta vencido.")
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if user is None:
+                raise ValueError("Usuário não encontrado.")
+            if user["role"] == "admin" or user["account_type"] == "completa" or user["subscription_status"] == "ativa":
+                raise ValueError("Seu acesso já está completo.")
+            previous = db.execute(
+                "SELECT id FROM coupon_redemptions WHERE coupon_id = ? AND user_id = ?",
+                (coupon["id"], user_id),
+            ).fetchone()
+            if previous:
+                raise ValueError("Este cupom já foi usado por esta conta.")
+            db.execute(
+                "INSERT INTO coupon_redemptions(coupon_id,user_id,redeemed_at) VALUES(?,?,?)",
+                (coupon["id"], user_id, now.isoformat()),
+            )
+            db.execute(
+                """
+                UPDATE users
+                SET account_type = 'completa', subscription_status = 'ativa',
+                    payment_provider_subscription_id = ?, subscription_started_at = ?,
+                    subscription_renews_at = NULL
+                WHERE id = ?
+                """,
+                (f"cupom:{coupon['code']}", now.isoformat(), user_id),
+            )
+        return dict(coupon)
+
+    def revoke_coupon_access(self, user_id: int, revoked_by_user_id: int) -> dict:
+        now = self._now()
+        with self._connect() as db:
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if user is None:
+                raise ValueError("Usuário não encontrado.")
+            provider_reference = str(user["payment_provider_subscription_id"] or "")
+            if user["role"] == "admin" or not provider_reference.startswith("cupom:"):
+                raise ValueError("Este usuário não possui acesso completo por cupom.")
+            db.execute(
+                """
+                UPDATE coupon_redemptions
+                SET revoked_at = ?, revoked_by_user_id = ?
+                WHERE user_id = ? AND revoked_at IS NULL
+                """,
+                (now, revoked_by_user_id, user_id),
+            )
+            db.execute(
+                """
+                UPDATE users
+                SET account_type = 'gratuita', subscription_status = 'inativa',
+                    payment_provider_subscription_id = NULL, subscription_started_at = NULL,
+                    subscription_renews_at = NULL
+                WHERE id = ?
+                """,
+                (user_id,),
+            )
+        return dict(self.get_user(user_id))
+
     def set_free_access_review(self, allow_free_access: bool) -> None:
         account_type = "gratuita" if allow_free_access else "completa"
         status = "inativa" if allow_free_access else "ativa"
@@ -633,11 +774,24 @@ class AuthRepository:
         with self._connect() as db:
             rows = db.execute("""
                 SELECT id, full_name, email, role, account_type, subscription_status,
+                       payment_provider_subscription_id, subscription_started_at,
                        total_access_count, last_access_at, daily_query_count, last_query_date,
                        script_generation_count, presentation_generation_count, created_at
                 FROM users ORDER BY created_at DESC
             """).fetchall()
-        return [dict(row) for row in rows]
+        users = []
+        for row in rows:
+            item = dict(row)
+            provider_reference = str(item.pop("payment_provider_subscription_id") or "")
+            item["coupon_code"] = provider_reference.removeprefix("cupom:") if provider_reference.startswith("cupom:") else None
+            item["access_origin"] = "cupom" if item["coupon_code"] else ("pagamento" if provider_reference else "cadastro")
+            item["can_revoke_coupon"] = bool(
+                item["coupon_code"]
+                and item["role"] != "admin"
+                and (item["account_type"] == "completa" or item["subscription_status"] == "ativa")
+            )
+            users.append(item)
+        return users
 
     def register_document(self, source: str, filename: str, file_type: str) -> None:
         now = self._now()
@@ -686,6 +840,22 @@ class AuthRepository:
         if not re.search(r"[a-záéíóúàâêôãõç]", password):
             return False, "A senha deve conter pelo menos uma letra minuscula."
         return True, ""
+
+    @staticmethod
+    def _normalize_coupon_code(code: str) -> str:
+        normalized = str(code or "").strip().upper()
+        if not 1 <= len(normalized) <= 40 or not re.fullmatch(r"[^\W_]+", normalized, re.UNICODE):
+            raise ValueError("O cupom deve ser uma única palavra de até 40 caracteres.")
+        return normalized
+
+    @staticmethod
+    def _coupon_valid_until(created_at: datetime, validity_period: str) -> datetime:
+        if validity_period in COUPON_DURATIONS:
+            return created_at + COUPON_DURATIONS[validity_period]
+        next_month = 1 if created_at.month == 12 else created_at.month + 1
+        next_year = created_at.year + 1 if created_at.month == 12 else created_at.year
+        next_day = min(created_at.day, monthrange(next_year, next_month)[1])
+        return created_at.replace(year=next_year, month=next_month, day=next_day)
 
     @staticmethod
     def verify_password(password: str, stored_hash: str) -> bool:

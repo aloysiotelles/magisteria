@@ -14,6 +14,7 @@
       <span class="user-chip">{{ user.full_name }}</span>
       {% if user.role == "admin" %}
       <button class="utility-button" id="stats-button" type="button">Estatísticas</button>
+      <button class="utility-button" id="coupons-button" type="button">Cupons</button>
       <button class="utility-button" id="admin-documents-button" type="button">Base documental</button>
       {% endif %}
       <button class="utility-button" id="database-button" type="button">Base de dados</button>
@@ -87,20 +88,19 @@
             </div>
             <p id="presentation-status" class="presentation-status" aria-live="polite"></p>
           </section>
+          <section id="followup-panel" class="followup-inline hidden" aria-labelledby="followup-title">
+            <div class="followup-heading">
+              <p class="section-kicker">Continue a conversa</p>
+              <h3 id="followup-title">Deseja aprofundar algum ponto?</h3>
+            </div>
+            <div id="followup-slot"></div>
+            <p class="privacy-note">A continuação permanece limitada aos documentos da base.</p>
+          </section>
         </article>
         <aside class="content-card sources-card">
           <div class="card-title"><span class="ornament">⌘</span><h2>Fontes consultadas</h2></div>
           <div id="sources"></div>
         </aside>
-      </section>
-
-      <section id="followup-panel" class="followup-card hidden" aria-labelledby="followup-title">
-        <div>
-          <p class="section-kicker">Continue a conversa</p>
-          <h2 id="followup-title">Deseja aprofundar algum ponto?</h2>
-        </div>
-        <div id="followup-slot"></div>
-        <p class="privacy-note">A continuação permanece limitada aos documentos da base.</p>
       </section>
 
       <section id="message-panel" class="message-panel hidden" aria-live="assertive"></section>
@@ -242,6 +242,35 @@
     <div class="modal-content">
       <p id="stats-summary" class="modal-intro">Consultando usuários...</p>
       <div class="table-wrap"><table class="admin-table" id="stats-table"></table></div>
+    </div>
+  </dialog>
+
+  <dialog class="modal admin-modal" id="coupons-modal" aria-labelledby="coupons-title">
+    <div class="modal-header">
+      <div>
+        <p class="section-kicker">Administração</p>
+        <h2 id="coupons-title">Cupons promocionais</h2>
+      </div>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+    </div>
+    <div class="modal-content">
+      <form id="admin-coupon-form" class="coupon-admin-form">
+        <label>
+          Palavra do cupom
+          <input id="admin-coupon-code" type="text" maxlength="40" autocomplete="off" placeholder="Ex.: CATEQUESE" required>
+        </label>
+        <label>
+          Prazo de validade
+          <select id="admin-coupon-validity" required>
+            <option value="dia">Um dia</option>
+            <option value="semana">Uma semana</option>
+            <option value="mes">Um mês</option>
+          </select>
+        </label>
+        <button class="button button-primary" id="admin-coupon-submit" type="submit">Criar cupom</button>
+      </form>
+      <p id="coupons-summary" class="modal-intro">Consultando cupons...</p>
+      <div class="table-wrap"><table class="admin-table" id="coupons-table"></table></div>
     </div>
   </dialog>
 

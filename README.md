@@ -4,7 +4,7 @@ Aplicativo web de pesquisa pastoral em uma base documental fechada. O sistema l�
 
 ## O que esta versão faz
 
-A versão 0.4.4 reduz o tempo da busca local com metadados preparados em memória, seleção dos melhores candidatos sem ordenar toda a base e análise bíblica por vetores já indexados. A relevância é verificada antes da prioridade editorial, evitando que uma fonte preferencial seja apresentada quando não trata da pergunta.
+A versão 0.6.6 combina busca textual e orientação pelos índices internos das obras. Quando o usuário digita uma palavra isolada, a consulta nominal segue o sumário do Catecismo, o índice do Compêndio de Símbolos e o sumário de A Fé Explicada; as remissões e os contextos encontrados também orientam a varredura de toda a documentação antes de um retorno negativo.
 
 - aceita arquivos PDF, DOCX, TXT e Markdown;
 - mantém um índice vetorial local e persistente;
@@ -14,12 +14,14 @@ A versão 0.4.4 reduz o tempo da busca local com metadados preparados em memóri
 - responde com indicação de arquivo e página/local;
 - reconhece pedidos por fontes específicas, combina relevância lexical e vetorial e transmite a resposta progressivamente;
 - segue a ordem editorial: Catecismo, Compêndio dos símbolos, Doutrina Social, Suma Teológica, Bíblia Ave Maria e demais documentos;
-- mantém o contexto das perguntas recentes e reposiciona o campo abaixo da resposta para continuidade da conversa;
+- mantém o contexto das perguntas recentes e posiciona o prompt de continuação dentro da resposta atual, logo abaixo dos botões de roteiro e slides;
 - detecta respostas interrompidas por limite de saída e solicita automaticamente sua continuação;
 - consolida o conteúdo em um texto didático único e apresenta as fontes somente depois da resposta;
+- aplica às respostas, roteiros e slides um padrão editorial sintetizado da análise integral das homilias de São João Paulo II cadastradas;
 - exibe parágrafos do Catecismo e dos compêndios, referências bíblicas por livro/capítulo/versículo e referências finais em formato ABNT;
 - mantém as respostas anteriores visíveis durante a continuidade da conversa;
 - informa quando a base não contém evidência suficiente;
+- permite ao Admin criar cupons promocionais com validade de um dia, uma semana ou um mês e revogar individualmente acessos concedidos por cupom;
 - não realiza pesquisa na internet nem usa ferramentas de busca aberta;
 - oferece as rotas `GET /`, `POST /perguntar`, `POST /indexar` e `GET /status`.
 

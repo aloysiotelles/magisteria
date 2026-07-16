@@ -52,6 +52,14 @@ const statsButton = document.querySelector("#stats-button");
 const statsModal = document.querySelector("#stats-modal");
 const statsSummary = document.querySelector("#stats-summary");
 const statsTable = document.querySelector("#stats-table");
+const couponsButton = document.querySelector("#coupons-button");
+const couponsModal = document.querySelector("#coupons-modal");
+const couponsSummary = document.querySelector("#coupons-summary");
+const couponsTable = document.querySelector("#coupons-table");
+const adminCouponForm = document.querySelector("#admin-coupon-form");
+const adminCouponCode = document.querySelector("#admin-coupon-code");
+const adminCouponValidity = document.querySelector("#admin-coupon-validity");
+const adminCouponSubmit = document.querySelector("#admin-coupon-submit");
 const adminDocumentsButton = document.querySelector("#admin-documents-button");
 const adminDocumentsModal = document.querySelector("#admin-documents-modal");
 const adminDocumentsSummary = document.querySelector("#admin-documents-summary");
@@ -375,27 +383,120 @@ changePasswordForm.addEventListener("submit", async event => {
   }
 });
 
+async function refreshAdminStatistics() {
+  statsSummary.textContent = "Consultando usuários...";
+  renderTable(statsTable, [], []);
+  const data = await request("/admin/estatisticas");
+  statsSummary.textContent = `${data.usuarios.length} usuário(s) cadastrado(s).`;
+  renderTable(statsTable, ["Nome", "Email", "Conta", "Assinatura", "Origem", "Acessos", "Último acesso", "Consultas", "Roteiros", "Slides", "Ações"], data.usuarios.map(user => {
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    if (user.can_revoke_coupon) {
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.textContent = "Revogar cupom";
+      revoke.addEventListener("click", async () => {
+        if (!window.confirm(`Revogar o acesso completo de ${user.full_name}?`)) return;
+        revoke.disabled = true;
+        try {
+          await request("/admin/assinatura/revogar-cupom", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ usuario_id: user.id }),
+          });
+          await refreshAdminStatistics();
+        } catch (error) {
+          statsSummary.textContent = error.message;
+          revoke.disabled = false;
+        }
+      });
+      actions.appendChild(revoke);
+    }
+    const origin = user.coupon_code
+      ? `Cupom ${user.coupon_code}`
+      : user.access_origin === "pagamento"
+        ? "Pagamento"
+        : user.role === "admin" ? "Admin" : "Cadastro";
+    return [
+      user.full_name,
+      user.email,
+      user.account_type,
+      user.subscription_status,
+      origin,
+      user.total_access_count,
+      formatAdminDate(user.last_access_at),
+      user.daily_query_count,
+      user.script_generation_count,
+      user.presentation_generation_count,
+      actions,
+    ];
+  }));
+}
+
 if (statsButton) {
   statsButton.addEventListener("click", async () => {
-    statsSummary.textContent = "Consultando usuários...";
-    renderTable(statsTable, [], []);
     statsModal.showModal();
     try {
-      const data = await request("/admin/estatisticas");
-      statsSummary.textContent = `${data.usuarios.length} usuário(s) cadastrado(s).`;
-      renderTable(statsTable, ["Nome", "Email", "Conta", "Assinatura", "Acessos", "Último acesso", "Consultas", "Roteiros", "Slides"], data.usuarios.map(user => [
-        user.full_name,
-        user.email,
-        user.account_type,
-        user.subscription_status,
-        user.total_access_count,
-        formatAdminDate(user.last_access_at),
-        user.daily_query_count,
-        user.script_generation_count,
-        user.presentation_generation_count,
-      ]));
+      await refreshAdminStatistics();
     } catch (error) {
       statsSummary.textContent = error.message;
+    }
+  });
+}
+
+function couponValidityLabel(value) {
+  return { dia: "Um dia", semana: "Uma semana", mes: "Um mês" }[value] || value;
+}
+
+async function refreshAdminCoupons() {
+  couponsSummary.textContent = "Consultando cupons...";
+  renderTable(couponsTable, [], []);
+  const data = await request("/admin/cupons");
+  const activeCount = data.cupons.filter(coupon => coupon.status === "ativo").length;
+  couponsSummary.textContent = `${data.cupons.length} cupom(ns) criado(s), ${activeCount} ativo(s).`;
+  renderTable(couponsTable, ["Cupom", "Prazo", "Criado em", "Válido até", "Status", "Usos", "Acessos ativos"], data.cupons.map(coupon => [
+    coupon.code,
+    couponValidityLabel(coupon.validity_period),
+    formatAdminDate(coupon.created_at),
+    formatAdminDate(coupon.valid_until),
+    coupon.status,
+    coupon.total_redemptions,
+    coupon.active_redemptions,
+  ]));
+}
+
+if (couponsButton) {
+  couponsButton.addEventListener("click", async () => {
+    couponsModal.showModal();
+    try {
+      await refreshAdminCoupons();
+    } catch (error) {
+      couponsSummary.textContent = error.message;
+    }
+  });
+}
+
+if (adminCouponForm) {
+  adminCouponForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    adminCouponSubmit.disabled = true;
+    couponsSummary.textContent = "Criando cupom...";
+    try {
+      const data = await request("/admin/cupons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cupom: adminCouponCode.value.trim(),
+          validade: adminCouponValidity.value,
+        }),
+      });
+      adminCouponForm.reset();
+      await refreshAdminCoupons();
+      couponsSummary.textContent = data.mensagem;
+    } catch (error) {
+      couponsSummary.textContent = error.message;
+    } finally {
+      adminCouponSubmit.disabled = false;
     }
   });
 }
@@ -533,6 +634,7 @@ function archiveCurrentResult() {
   const archived = resultPanel.cloneNode(true);
   archived.removeAttribute("id");
   archived.classList.add("archived-result");
+  archived.querySelector(".followup-inline")?.remove();
   archived.querySelectorAll("[id]").forEach(element => element.removeAttribute("id"));
   resultPanel.parentNode.insertBefore(archived, resultPanel);
 }
@@ -597,6 +699,7 @@ form.addEventListener("submit", async event => {
   questionField.disabled = true;
   isSearching = true;
   searchButton.classList.add("loading");
+  followupPanel.classList.add("hidden");
   try {
     const response = await fetch("/perguntar-stream", {
       method: "POST",
@@ -671,6 +774,9 @@ form.addEventListener("submit", async event => {
     searchButton.disabled = false;
     questionField.disabled = false;
     searchButton.classList.remove("loading");
+    if (conversationHistory.length && form.parentElement === followupSlot) {
+      followupPanel.classList.remove("hidden");
+    }
   }
 });
 

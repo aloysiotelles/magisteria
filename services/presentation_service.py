@@ -17,6 +17,8 @@ from openai import AsyncOpenAI
 from openai import APIConnectionError, APIStatusError, RateLimitError
 from PIL import Image, ImageDraw
 
+from services.editorial_style import PRESENTATION_WRITING_STANDARD
+
 
 MIN_PRESENTATION_TOPICS = 10
 MAX_PRESENTATION_TOPICS = 14
@@ -43,14 +45,7 @@ class PresentationService:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
         response = await self.client.responses.create(
             model=self.text_model,
-            instructions=(
-                "Organize exclusivamente o conteúdo fornecido em 10 a 14 tópicos para uma pregação ou palestra. "
-                "Não acrescente fatos, citações ou referências externas. Cada tópico deve ter título curto, "
-                "síntese de até 38 palavras e 2 a 3 pontos de desenvolvimento. Divida ideias amplas em etapas "
-                "menores para que a apresentação tenha ritmo, progressão e mais slides. Crie também um título "
-                "de capa marcante, coerente e com no máximo 7 palavras, e uma frase final de até 24 palavras que "
-                "resuma a mensagem central. Responda somente em JSON válido."
-            ),
+            instructions=self._plan_instructions(),
             input=f"TÍTULO: {title}\n\nCONTEÚDO: {answer}",
             text={"format": {"type": "json_schema", "name": "roteiro", "strict": True, "schema": {
                 "type": "object", "properties": {
@@ -65,6 +60,18 @@ class PresentationService:
             max_output_tokens=3600,
         )
         return json.loads(response.output_text)
+
+    @staticmethod
+    def _plan_instructions() -> str:
+        return (
+            "Organize exclusivamente o conteúdo fornecido em 10 a 14 tópicos para uma pregação ou palestra. "
+            "Não acrescente fatos, citações ou referências externas. Cada tópico deve ter título curto, "
+            "síntese de até 38 palavras e 2 a 3 pontos de desenvolvimento. Divida ideias amplas em etapas "
+            "menores para que a apresentação tenha ritmo, progressão e mais slides. Crie também um título "
+            "de capa marcante, coerente e com no máximo 7 palavras, e uma frase final de até 24 palavras que "
+            "resuma a mensagem central. Responda somente em JSON válido. "
+            f"{PRESENTATION_WRITING_STANDARD}"
+        )
 
     async def create_outline(self, title: str, answer: str) -> list[dict]:
         return (await self.create_plan(title, answer))["topicos"]
