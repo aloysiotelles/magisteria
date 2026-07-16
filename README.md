@@ -4,9 +4,11 @@ Aplicativo web de pesquisa pastoral em uma base documental fechada. O sistema l�
 
 ## O que esta versão faz
 
-A versão 0.7.0 trata palavras e expressões curtas como consultas temáticas válidas. A recuperação combina correspondência lexical exata, variantes ortográficas e morfológicas seguras, expansão semântica controlada, títulos/metadados, remissões dos índices internos e fallback global. Os rankings incompatíveis são fundidos por Reciprocal Rank Fusion (RRF), e correspondências lexicais reais nunca são eliminadas por um limiar absoluto.
+A versão 0.8.0 acrescenta uma interface poliglota em português, inglês e espanhol sem alterar a base documental em português. Perguntas feitas nos idiomas estrangeiros são convertidas para português antes da recuperação; somente a resposta final e os materiais derivados são redigidos no idioma escolhido. A recuperação continua combinando correspondência lexical exata, variantes ortográficas e morfológicas seguras, expansão semântica controlada, títulos/metadados, remissões dos índices internos e fallback global.
 
 - aceita arquivos PDF, DOCX, TXT e Markdown;
+- permite escolher português, inglês ou espanhol na barra superior e preserva a escolha no navegador;
+- mantém toda a indexação, análise e busca em português, traduzindo apenas a consulta de entrada para recuperação e a resposta de saída para apresentação;
 - mantém um índice local SQLite FTS5 persistente; a versão atual não gera embeddings;
 - atualiza automaticamente a base sempre que o aplicativo é iniciado;
 - mostra percentual, documento atual e estimativa de tempo durante a atualização;
@@ -84,16 +86,17 @@ Nunca publique o arquivo `.env`. Ele já está protegido pelo `.gitignore`.
 
 ## Fluxo RAG auditável
 
-1. `QuestionRequest` recebe a consulta sem exigir verbo, pontuação ou três caracteres.
-2. `services/query_analysis.py` preserva o original, normaliza Unicode/espaços, cria a forma sem acentos e classifica `TERM`, `PHRASE`, `QUESTION`, `REFERENCE` ou `COMMAND`.
-3. A consulta original permanece na primeira posição; `TERM` e `PHRASE` recebem expansões auxiliares limitadas.
-4. `services/vector_store.py` executa busca exata, variantes seguras, expansão controlada, título/metadados, orientação por índices, âncoras nominais e fallback em toda a base.
-5. Os candidatos são deduplicados pelo ID do chunk e fundidos por RRF. Filtros de fonte inativa continuam valendo; casamento lexical, título e remissão são protegidos contra corte arbitrário.
-6. A seleção final respeita a hierarquia editorial e diversifica documentos antes de montar o contexto.
-7. `services/answer_service.py` interpreta `TERM`/`PHRASE` como pedido de visão geral e gera exclusivamente a partir dos chunks.
-8. O revisor pode aprovar ou solicitar reescrita fundamentada. Ele não pode converter chunks existentes em “ausência documental”; bloqueios acionam uma nova redação conservadora.
-9. Ausência real, tema amplo, baixa confiança e falha técnica usam estados e mensagens distintos.
-10. `services/rag_diagnostics.py` registra request ID, tempos, estratégias, contagens, scores, fontes, filtros, chunks, tokens aproximados, decisão do revisor e motivo final. Emails, números longos e segredos são redigidos.
+1. `QuestionRequest` recebe a consulta e o idioma escolhido sem exigir verbo, pontuação ou três caracteres.
+2. Para inglês ou espanhol, `services/answer_service.py` traduz somente a consulta de recuperação para português brasileiro; a pergunta original permanece disponível para a resposta final.
+3. `services/query_analysis.py` preserva a consulta de recuperação, normaliza Unicode/espaços, cria a forma sem acentos e classifica `TERM`, `PHRASE`, `QUESTION`, `REFERENCE` ou `COMMAND`.
+4. A consulta em português permanece na primeira posição; `TERM` e `PHRASE` recebem expansões auxiliares limitadas.
+5. `services/vector_store.py` executa busca exata, variantes seguras, expansão controlada, título/metadados, orientação por índices, âncoras nominais e fallback em toda a base.
+6. Os candidatos são deduplicados pelo ID do chunk e fundidos por RRF. Filtros de fonte inativa continuam valendo; casamento lexical, título e remissão são protegidos contra corte arbitrário.
+7. A seleção final respeita a hierarquia editorial e diversifica documentos antes de montar o contexto.
+8. `services/answer_service.py` gera exclusivamente a partir dos chunks e redige a saída no idioma selecionado.
+9. O revisor pode aprovar ou solicitar reescrita fundamentada, sempre preservando o idioma final. Ele não pode converter chunks existentes em “ausência documental”.
+10. Ausência real, tema amplo, baixa confiança e falha técnica usam estados e mensagens localizados.
+11. `services/rag_diagnostics.py` registra request ID, tempos, estratégias, contagens, scores, fontes, filtros, chunks, tokens aproximados, decisão do revisor e motivo final. Emails, números longos e segredos são redigidos.
 
 Administradores acessam **Diagnóstico RAG** na interface e podem repetir uma recuperação sem consumir franquia. A matriz permanente está em `tests/fixtures/catholic_single_term_queries.json`. Para auditar a cobertura da base real:
 

@@ -28,6 +28,7 @@ from services.answer_service import (
     format_sources,
 )
 from services.auth_repository import AuthRepository
+from services.localization import LanguageCode, answer_message, normalize_language
 from services.presentation_service import PresentationService, safe_filename
 from services.asaas_service import AsaasError, AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
@@ -35,7 +36,7 @@ from services.vector_store import LocalVectorStore
 from services.query_analysis import QueryType, analyze_query
 from services.rag_diagnostics import RAGDiagnosticsRepository, new_request_id, redact_query
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -638,6 +639,7 @@ async def subscription_info(request: Request):
             "provedor": "Asaas" if provider_name == "asaas" else "Mercado Pago",
             "disponivel": provider_service.configured,
             "valor": f"{formatted_payment_price()} por mês" if provider_service.price > 0 else None,
+            "valor_base": formatted_payment_price() if provider_service.price > 0 else None,
             "status": latest_order["status"] if latest_order else None,
             "confirmacao": "A liberação completa ocorre depois da confirmação da assinatura pelo Asaas.",
         },
@@ -871,6 +873,7 @@ class ConversationTurn(BaseModel):
 class QuestionRequest(BaseModel):
     pergunta: str = Field(min_length=1, max_length=2000)
     historico: list[ConversationTurn] = Field(default_factory=list, max_length=6)
+    idioma: LanguageCode = "pt-BR"
 
 
 class PasswordChangeRequest(BaseModel):
@@ -882,6 +885,7 @@ class PasswordChangeRequest(BaseModel):
 class PresentationRequest(BaseModel):
     titulo: str = Field(min_length=3, max_length=300)
     resposta: str = Field(min_length=20, max_length=16000)
+    idioma: LanguageCode = "pt-BR"
 
 
 def retrieval_query(payload: QuestionRequest) -> str:
@@ -891,18 +895,22 @@ def retrieval_query(payload: QuestionRequest) -> str:
     return question
 
 
-def ordered_chunks(payload: QuestionRequest) -> list[dict]:
+def ordered_chunks(payload: QuestionRequest, query_override: str | None = None) -> list[dict]:
     return vector_store.search_ordered(
-        retrieval_query(payload),
+        query_override or retrieval_query(payload),
         limit=max(settings.MAX_CONTEXT_CHUNKS, 16),
         minimum_score=settings.MIN_RELEVANCE_SCORE,
         excluded_sources=auth_repository.inactive_sources(),
     )
 
 
-def ordered_chunks_with_diagnostics(payload: QuestionRequest) -> tuple[list[dict], dict]:
+def ordered_chunks_with_diagnostics(
+    payload: QuestionRequest,
+    query_override: str | None = None,
+) -> tuple[list[dict], dict]:
+    search_query = query_override or retrieval_query(payload)
     result = vector_store.search_ordered(
-        retrieval_query(payload),
+        search_query,
         limit=max(settings.MAX_CONTEXT_CHUNKS, 16),
         minimum_score=settings.MIN_RELEVANCE_SCORE,
         excluded_sources=auth_repository.inactive_sources(),
@@ -926,7 +934,7 @@ def ordered_chunks_with_diagnostics(payload: QuestionRequest) -> tuple[list[dict
                 ),
             )
         return chunks, diagnostics
-    analysis = analyze_query(retrieval_query(payload))
+    analysis = analyze_query(search_query)
     return result, {
         "query": analysis.to_dict(),
         "candidate_counts": {},
@@ -937,17 +945,17 @@ def ordered_chunks_with_diagnostics(payload: QuestionRequest) -> tuple[list[dict
     }
 
 
-def retrieval_notice(chunks: list[dict], diagnostics: dict) -> str:
+def retrieval_notice(chunks: list[dict], diagnostics: dict, language: str = "pt-BR") -> str:
     if not chunks:
         return ""
     query_type = diagnostics.get("query", {}).get("query_type")
     if query_type in {QueryType.TERM.value, QueryType.PHRASE.value}:
-        return BROAD_TOPIC_MESSAGE
+        return answer_message("broad_topic", language)
     reranking = diagnostics.get("reranking", [])
     best = max((float(item.get("score_normalized", 0)) for item in reranking), default=0)
     strong_lexical = any("lexical_exact" in item.get("strategies", []) for item in reranking[:5])
     if best < 0.25 and not strong_lexical:
-        return LOW_CONFIDENCE_MESSAGE
+        return answer_message("low_confidence", language)
     return ""
 
 
@@ -955,9 +963,9 @@ def estimated_context_tokens(chunks: list[dict]) -> int:
     return sum(max(len(str(chunk.get("text", ""))) // 4, 1) for chunk in chunks)
 
 
-def homily_style_chunks(payload: QuestionRequest) -> list[dict]:
+def homily_style_chunks(payload: QuestionRequest, query_override: str | None = None) -> list[dict]:
     chunks = vector_store.search(
-        retrieval_query(payload),
+        query_override or retrieval_query(payload),
         limit=3,
         minimum_score=0.02,
         source_filter=("joao-paulo-ii-homilias", "homilias"),
@@ -1008,13 +1016,34 @@ async def ask(payload: QuestionRequest, request: Request):
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
     question = payload.pergunta.strip()
+    language = normalize_language(payload.idioma)
     request_id = new_request_id()
     started = time.monotonic()
-    chunks, diagnostics = await asyncio.to_thread(ordered_chunks_with_diagnostics, payload)
-    style_chunks = await asyncio.to_thread(homily_style_chunks, payload) if chunks else []
+    try:
+        search_query_pt = retrieval_query(payload)
+        if language != "pt-BR":
+            search_query_pt = await answer_service.translate_query_to_portuguese(
+                search_query_pt, language
+            )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=answer_message("technical_failure", language)) from exc
+    except Exception as exc:
+        logger.exception("Falha ao traduzir a consulta para recuperação em português.")
+        raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
+    chunks, diagnostics = await asyncio.to_thread(
+        ordered_chunks_with_diagnostics, payload, search_query_pt
+    )
+    if chunks:
+        style_chunks = await asyncio.to_thread(
+            homily_style_chunks, payload, search_query_pt
+        ) if language != "pt-BR" else await asyncio.to_thread(homily_style_chunks, payload)
+    else:
+        style_chunks = []
     history = [turn.model_dump() for turn in payload.historico]
     try:
-        result = await answer_service.answer_with_review(question, chunks, history, style_chunks)
+        result = await answer_service.answer_with_review(
+            question, chunks, history, style_chunks, language
+        )
     except RuntimeError as exc:
         await asyncio.to_thread(
             rag_diagnostics.record, request_id, question, diagnostics,
@@ -1030,7 +1059,7 @@ async def ask(payload: QuestionRequest, request: Request):
             error=type(exc).__name__, final_reason=TECHNICAL_FAILURE_MESSAGE,
             context_tokens=estimated_context_tokens(chunks),
         )
-        raise HTTPException(status_code=502, detail=TECHNICAL_FAILURE_MESSAGE) from exc
+        raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
     auth_repository.increment_usage(user["id"], "query")
     await asyncio.to_thread(
         rag_diagnostics.record, request_id, question, diagnostics,
@@ -1045,7 +1074,7 @@ async def ask(payload: QuestionRequest, request: Request):
         "resposta": result["resposta"],
         "status_revisao": result["status_revisao"],
         "motivo_revisao": result["motivo_revisao"],
-        "mensagem_busca": retrieval_notice(chunks, diagnostics),
+        "mensagem_busca": retrieval_notice(chunks, diagnostics, language),
         "fontes": format_sources(chunks),
     }
 
@@ -1060,10 +1089,29 @@ async def ask_stream(payload: QuestionRequest, request: Request):
         raise HTTPException(status_code=403, detail=message)
 
     question = payload.pergunta.strip()
+    language = normalize_language(payload.idioma)
     request_id = new_request_id()
     started = time.monotonic()
-    chunks, diagnostics = await asyncio.to_thread(ordered_chunks_with_diagnostics, payload)
-    style_chunks = await asyncio.to_thread(homily_style_chunks, payload) if chunks else []
+    try:
+        search_query_pt = retrieval_query(payload)
+        if language != "pt-BR":
+            search_query_pt = await answer_service.translate_query_to_portuguese(
+                search_query_pt, language
+            )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=answer_message("technical_failure", language)) from exc
+    except Exception as exc:
+        logger.exception("Falha ao traduzir a consulta para recuperação em português.")
+        raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
+    chunks, diagnostics = await asyncio.to_thread(
+        ordered_chunks_with_diagnostics, payload, search_query_pt
+    )
+    if chunks:
+        style_chunks = await asyncio.to_thread(
+            homily_style_chunks, payload, search_query_pt
+        ) if language != "pt-BR" else await asyncio.to_thread(homily_style_chunks, payload)
+    else:
+        style_chunks = []
     history = [turn.model_dump() for turn in payload.historico]
     if chunks and not answer_service.api_key:
         raise HTTPException(status_code=503, detail="A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
@@ -1073,14 +1121,16 @@ async def ask_stream(payload: QuestionRequest, request: Request):
             {
                 "tipo": "fontes",
                 "request_id": request_id,
-                "mensagem_busca": retrieval_notice(chunks, diagnostics),
+                "mensagem_busca": retrieval_notice(chunks, diagnostics, language),
                 "fontes": format_sources(chunks),
                 "referencias_abnt": format_abnt_references(chunks),
             },
             ensure_ascii=False,
         ) + "\n"
         try:
-            result = await answer_service.answer_with_review(question, chunks, history, style_chunks)
+            result = await answer_service.answer_with_review(
+                question, chunks, history, style_chunks, language
+            )
             await asyncio.to_thread(
                 rag_diagnostics.record, request_id, question, diagnostics,
                 round((time.monotonic() - started) * 1000),
@@ -1111,7 +1161,7 @@ async def ask_stream(payload: QuestionRequest, request: Request):
                 context_tokens=estimated_context_tokens(chunks),
             )
             yield json.dumps(
-                {"tipo": "erro", "mensagem": TECHNICAL_FAILURE_MESSAGE},
+                {"tipo": "erro", "mensagem": answer_message("technical_failure", language)},
                 ensure_ascii=False,
             ) + "\n"
 
@@ -1133,8 +1183,14 @@ async def create_script(payload: PresentationRequest, request: Request):
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
     try:
-        topics = await presentation_service.create_outline(payload.titulo, payload.resposta)
-        content = await asyncio.to_thread(presentation_service.create_docx, payload.titulo, topics)
+        if payload.idioma == "pt-BR":
+            topics = await presentation_service.create_outline(payload.titulo, payload.resposta)
+            content = await asyncio.to_thread(presentation_service.create_docx, payload.titulo, topics)
+        else:
+            topics = await presentation_service.create_outline(payload.titulo, payload.resposta, payload.idioma)
+            content = await asyncio.to_thread(
+                presentation_service.create_docx, payload.titulo, topics, payload.idioma
+            )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -1152,13 +1208,23 @@ async def create_slides(payload: PresentationRequest, request: Request):
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
     try:
-        plan = await presentation_service.create_plan(payload.titulo, payload.resposta)
-        content = await presentation_service.create_pptx(
-            payload.titulo,
-            plan["topicos"],
-            plan["titulo_curto"],
-            plan["frase_final"],
-        )
+        if payload.idioma == "pt-BR":
+            plan = await presentation_service.create_plan(payload.titulo, payload.resposta)
+            content = await presentation_service.create_pptx(
+                payload.titulo,
+                plan["topicos"],
+                plan["titulo_curto"],
+                plan["frase_final"],
+            )
+        else:
+            plan = await presentation_service.create_plan(payload.titulo, payload.resposta, payload.idioma)
+            content = await presentation_service.create_pptx(
+                payload.titulo,
+                plan["topicos"],
+                plan["titulo_curto"],
+                plan["frase_final"],
+                payload.idioma,
+            )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:

@@ -23,6 +23,7 @@ from services.rag_diagnostics import RAGDiagnosticsRepository
 from services.document_loader import load_document
 from services.editorial_style import HOMILY_CORPUS_PROFILE
 from services.presentation_service import PresentationService, safe_filename
+from services.localization import answer_message
 from services.asaas_service import AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 
@@ -1270,3 +1271,92 @@ def test_admin_can_upload_document_chunks(monkeypatch, tmp_path: Path):
     assert second.status_code == 200
     assert second.json()["arquivo"] == "subpasta/documento.txt"
     assert (documents / "subpasta" / "documento.txt").read_text(encoding="utf-8") == "parte 1 parte 2"
+
+
+def test_localized_no_document_messages_do_not_require_api_key():
+    service = AnswerService("", "modelo")
+
+    async def call(language):
+        return await service.answer_with_review("Question", [], language=language)
+
+    english = asyncio.run(call("en"))
+    spanish = asyncio.run(call("es"))
+
+    assert english["resposta"] == answer_message("no_documents", "en")
+    assert spanish["resposta"] == answer_message("no_documents", "es")
+
+
+def test_foreign_answer_prompt_requires_only_the_selected_language():
+    service = AnswerService("chave", "modelo")
+    chunks = [{"source": "Catecismo.txt", "location": "página 1", "text": "A dignidade é inerente à pessoa.", "score": 1.0}]
+
+    english = service._request_arguments("What is human dignity?", chunks, [], language="en")
+    spanish = service._request_arguments("¿Qué es la dignidad humana?", chunks, [], language="es")
+
+    assert "exclusively in clear, natural international English" in english["instructions"]
+    assert "exclusivamente en español internacional" in spanish["instructions"]
+    assert "em português brasileiro contemporâneo" not in english["instructions"]
+    assert "em português brasileiro contemporâneo" not in spanish["instructions"]
+
+
+def test_query_translation_returns_portuguese_search_text(monkeypatch):
+    class FakeResponses:
+        def __init__(self):
+            self.calls = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(output_text="O que é a dignidade da pessoa humana?")
+
+    fake_responses = FakeResponses()
+    monkeypatch.setattr(
+        "services.answer_service.AsyncOpenAI",
+        lambda api_key: SimpleNamespace(responses=fake_responses),
+    )
+    service = AnswerService("chave", "modelo")
+
+    translated = asyncio.run(service.translate_query_to_portuguese("What is human dignity?", "en"))
+
+    assert translated == "O que é a dignidade da pessoa humana?"
+    assert fake_responses.calls[0]["input"] == "What is human dignity?"
+    assert "uso exclusivo em uma busca documental" in fake_responses.calls[0]["instructions"]
+
+
+def test_foreign_query_is_translated_before_retrieval_and_answered_in_selected_language(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "magisteria.sqlite")
+    diagnostics_repository = RAGDiagnosticsRepository(tmp_path / "magisteria.sqlite", False)
+    monkeypatch.setattr(application, "auth_repository", repository)
+    monkeypatch.setattr(application, "rag_diagnostics", diagnostics_repository)
+    calls = {}
+
+    class FakeAnswerService:
+        api_key = "configured"
+
+        async def translate_query_to_portuguese(self, query, source_language):
+            calls["translation"] = (query, source_language)
+            return "dignidade da pessoa humana"
+
+        async def answer_with_review(self, question, chunks, history, style_chunks, language):
+            calls["answer"] = (question, language)
+            return {"resposta": "Human dignity is inherent to every person.", "status_revisao": "approve", "motivo_revisao": ""}
+
+    def fake_retrieval(payload, query_override=None):
+        calls["retrieval"] = query_override
+        return ([{
+            "source": "Catecismo.txt", "location": "página 1", "text": "A dignidade é inerente.",
+            "score": 1.0, "ordem": 1, "categoria": "Documento",
+        }], {"query": {"query_type": "question"}, "reranking": [{"score_normalized": 1.0, "strategies": ["lexical_exact"]}]})
+
+    monkeypatch.setattr(application, "answer_service", FakeAnswerService())
+    monkeypatch.setattr(application, "ordered_chunks_with_diagnostics", fake_retrieval)
+    monkeypatch.setattr(application, "homily_style_chunks", lambda payload, query_override=None: [])
+    client = TestClient(application.app)
+    create_free_user(client, email="polyglot@example.com")
+
+    response = client.post("/perguntar", json={"pergunta": "What is human dignity?", "idioma": "en"})
+
+    assert response.status_code == 200
+    assert calls["translation"] == ("What is human dignity?", "en")
+    assert calls["retrieval"] == "dignidade da pessoa humana"
+    assert calls["answer"] == ("What is human dignity?", "en")
+    assert response.json()["resposta"] == "Human dignity is inherent to every person."

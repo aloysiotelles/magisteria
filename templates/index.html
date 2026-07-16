@@ -10,27 +10,35 @@
 </head>
 <body>
   <div class="page-shell">
-    <nav class="utility-nav" aria-label="Informações do aplicativo">
+    <nav class="utility-nav" aria-label="Informações do aplicativo" data-i18n-aria-label="nav.aria">
       <span class="user-chip">{{ user.full_name }}</span>
+      <label class="language-picker" for="language-select">
+        <span data-i18n="common.language">Idioma</span>
+        <select id="language-select" aria-label="Idioma" data-i18n-aria-label="common.language">
+          <option value="pt-BR">Português</option>
+          <option value="en">English</option>
+          <option value="es">Español</option>
+        </select>
+      </label>
       {% if user.role == "admin" %}
-      <button class="utility-button" id="stats-button" type="button">Estatísticas</button>
-      <button class="utility-button" id="coupons-button" type="button">Cupons</button>
-      <button class="utility-button" id="admin-documents-button" type="button">Base documental</button>
-      <button class="utility-button" id="rag-diagnostics-button" type="button">Diagnóstico RAG</button>
+      <button class="utility-button" id="stats-button" type="button" data-i18n="nav.statistics">Estatísticas</button>
+      <button class="utility-button" id="coupons-button" type="button" data-i18n="nav.coupons">Cupons</button>
+      <button class="utility-button" id="admin-documents-button" type="button" data-i18n="nav.documents">Base documental</button>
+      <button class="utility-button" id="rag-diagnostics-button" type="button" data-i18n="nav.rag">Diagnóstico RAG</button>
       {% endif %}
-      <button class="utility-button" id="database-button" type="button">Base de dados</button>
-      <button class="utility-button" id="subscription-button" type="button">Assinatura</button>
-      <button class="utility-button" id="change-password-button" type="button">Alterar senha</button>
-      <button class="utility-button" id="about-button" type="button">Sobre</button>
-      <form class="logout-form" method="post" action="/logout"><button class="utility-button" type="submit">Sair</button></form>
+      <button class="utility-button" id="database-button" type="button" data-i18n="nav.database">Base de dados</button>
+      <button class="utility-button" id="subscription-button" type="button" data-i18n="nav.subscription">Assinatura</button>
+      <button class="utility-button" id="change-password-button" type="button" data-i18n="nav.password">Alterar senha</button>
+      <button class="utility-button" id="about-button" type="button" data-i18n="nav.about">Sobre</button>
+      <form class="logout-form" method="post" action="/logout"><button class="utility-button" type="submit" data-i18n="nav.logout">Sair</button></form>
     </nav>
     <header class="hero">
       <img class="logo" src="{{ url_for('static', path='/logo-magisteria.png') }}" alt="Logo MAGISTERIA">
       <div class="identity">
-        <p class="eyebrow">Sabedoria da tradição · precisão da tecnologia</p>
+        <p class="eyebrow" data-i18n="hero.eyebrow">Sabedoria da tradição · precisão da tecnologia</p>
         <h1>MAGISTER<span>IA</span></h1>
-        <p class="subtitle">Pesquisa pastoral com curadoria das fontes.</p>
-        <p class="slogan">PESQUISA CATÓLICA COM CURADORIA - Gaste seu tempo <strong>EVANGELIZANDO</strong>, não pesquisando!</p>
+        <p class="subtitle" data-i18n="hero.subtitle">Pesquisa pastoral com curadoria das fontes.</p>
+        <p class="slogan" data-i18n-html="hero.slogan">PESQUISA CATÓLICA COM CURADORIA - Gaste seu tempo <strong>EVANGELIZANDO</strong>, não pesquisando!</p>
       </div>
     </header>
 
@@ -38,69 +46,69 @@
       <section id="search-card" class="search-card" aria-labelledby="search-title">
         <div class="section-heading">
           <div>
-            <p class="section-kicker">Biblioteca documental fechada</p>
-            <h2 id="search-title">O que você deseja pesquisar?</h2>
+            <p class="section-kicker" data-i18n="search.kicker">Biblioteca documental fechada</p>
+            <h2 id="search-title" data-i18n="search.title">O que você deseja pesquisar?</h2>
           </div>
           <div id="base-status" class="status-pill" aria-live="polite">
             <span class="status-dot"></span>
-            <span>Consultando a base…</span>
+            <span data-i18n="search.loadingBase">Consultando a base…</span>
           </div>
         </div>
 
         <div id="index-progress" class="index-progress hidden" aria-live="polite">
           <div class="progress-copy">
-            <strong>Atualizando a base documental</strong>
-            <span id="progress-detail">Preparando documentos…</span>
+            <strong data-i18n="search.updating">Atualizando a base documental</strong>
+            <span id="progress-detail" data-i18n="search.preparing">Preparando documentos…</span>
           </div>
           <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div id="progress-bar" class="progress-bar"></div>
           </div>
           <div class="progress-numbers">
             <span id="progress-percent">0%</span>
-            <span id="progress-eta">Calculando tempo restante…</span>
+            <span id="progress-eta" data-i18n="search.calculating">Calculando tempo restante…</span>
           </div>
         </div>
 
         <form id="question-form">
-          <label class="sr-only" for="question">Digite sua pergunta</label>
+          <label class="sr-only" for="question" data-i18n="search.label">Digite sua pergunta</label>
           <textarea id="question" name="pergunta" rows="4" maxlength="2000"
-            placeholder="Ex.: O que os documentos ensinam sobre a dignidade da pessoa humana?" required></textarea>
+            placeholder="Ex.: O que os documentos ensinam sobre a dignidade da pessoa humana?" data-i18n-placeholder="search.placeholder" required></textarea>
           <div class="actions">
             <button class="button button-primary" id="search-button" type="submit">
-              <span class="button-icon">⌕</span> Pesquisar
+              <span class="button-icon">⌕</span> <span data-i18n="search.button">Pesquisar</span>
             </button>
           </div>
         </form>
-        <p class="privacy-note">A pesquisa é feita exclusivamente nos documentos cadastrados. Nenhuma busca aberta na internet é realizada.</p>
+        <p class="privacy-note" data-i18n="search.privacy">A pesquisa é feita exclusivamente nos documentos cadastrados. Nenhuma busca aberta na internet é realizada.</p>
       </section>
 
       <section id="result-panel" class="result-grid hidden" aria-live="polite">
         <article class="content-card answer-card">
-          <div class="card-title"><span class="ornament">✦</span><h2>Resposta</h2></div>
+          <div class="card-title"><span class="ornament">✦</span><h2 data-i18n="result.answer">Resposta</h2></div>
           <p id="retrieval-notice" class="review-status neutral hidden" aria-live="polite"></p>
           <p id="answer-status" class="review-status hidden" aria-live="polite"></p>
           <div id="answer" class="answer-content"></div>
           <section id="presentation-module" class="presentation-module hidden" aria-labelledby="presentation-title">
-            <p class="section-kicker">ROTEIRO E APRESENTAÇÃO</p>
-            <h3 id="presentation-title">Transforme esta pesquisa em material para apresentar</h3>
-            <p>O conteúdo será organizado em tópicos. Escolha um roteiro editável ou slides ilustrados por IA.</p>
+            <p class="section-kicker" data-i18n="presentation.kicker">ROTEIRO E APRESENTAÇÃO</p>
+            <h3 id="presentation-title" data-i18n="presentation.title">Transforme esta pesquisa em material para apresentar</h3>
+            <p data-i18n="presentation.description">O conteúdo será organizado em tópicos. Escolha um roteiro editável ou slides ilustrados por IA.</p>
             <div class="presentation-actions">
-              <button class="button button-secondary" id="create-script-button" type="button">Criar ROTEIRO</button>
-              <button class="button button-primary" id="create-slides-button" type="button">Criar SLIDES</button>
+              <button class="button button-secondary" id="create-script-button" type="button" data-i18n="presentation.script">Criar ROTEIRO</button>
+              <button class="button button-primary" id="create-slides-button" type="button" data-i18n="presentation.slides">Criar SLIDES</button>
             </div>
             <p id="presentation-status" class="presentation-status" aria-live="polite"></p>
           </section>
           <section id="followup-panel" class="followup-inline hidden" aria-labelledby="followup-title">
             <div class="followup-heading">
-              <p class="section-kicker">Continue a conversa</p>
-              <h3 id="followup-title">Deseja aprofundar algum ponto?</h3>
+              <p class="section-kicker" data-i18n="followup.kicker">Continue a conversa</p>
+              <h3 id="followup-title" data-i18n="followup.title">Deseja aprofundar algum ponto?</h3>
             </div>
             <div id="followup-slot"></div>
-            <p class="privacy-note">A continuação permanece limitada aos documentos da base.</p>
+            <p class="privacy-note" data-i18n="followup.privacy">A continuação permanece limitada aos documentos da base.</p>
           </section>
         </article>
         <aside class="content-card sources-card">
-          <div class="card-title"><span class="ornament">⌘</span><h2>Fontes consultadas</h2></div>
+          <div class="card-title"><span class="ornament">⌘</span><h2 data-i18n="result.sources">Fontes consultadas</h2></div>
           <div id="sources"></div>
         </aside>
       </section>
@@ -108,19 +116,19 @@
       <section id="message-panel" class="message-panel hidden" aria-live="assertive"></section>
     </main>
 
-    <footer><span class="footer-cross">✠</span> MAGISTER<span>IA</span> · Conteúdo fundamentado nas fontes cadastradas</footer>
+    <footer><span class="footer-cross">✠</span> <span data-i18n="footer.text">MAGISTERIA · Conteúdo fundamentado nas fontes cadastradas</span></footer>
   </div>
 
   <dialog class="modal disclaimer-modal" id="disclaimer-modal" aria-labelledby="disclaimer-title" data-requires-confirmation>
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Uso responsável</p>
-        <h2 id="disclaimer-title">Antes de começar</h2>
+        <p class="section-kicker" data-i18n="disclaimer.kicker">Uso responsável</p>
+        <h2 id="disclaimer-title" data-i18n="disclaimer.title">Antes de começar</h2>
       </div>
     </div>
     <div class="modal-content">
-      <p>Esta ferramenta se destina prioritariamente a catequistas e pregadores católicos, mas é aberta a qualquer um que procure conhecer a fé católica.</p>
-      <p><strong>Entretanto, lembre-se: NENHUM APLICATIVO OU MATERIAL DIGITAL SUBSTITUI A CATEQUESE PAROQUIAL OU O TRABALHO DO CATEQUISTA.</strong></p>
+      <p data-i18n="disclaimer.p1">Esta ferramenta se destina prioritariamente a catequistas e pregadores católicos, mas é aberta a qualquer um que procure conhecer a fé católica.</p>
+      <p data-i18n-html="disclaimer.p2"><strong>Entretanto, lembre-se: NENHUM APLICATIVO OU MATERIAL DIGITAL SUBSTITUI A CATEQUESE PAROQUIAL OU O TRABALHO DO CATEQUISTA.</strong></p>
       <div class="actions disclaimer-actions">
         <button class="button button-primary" id="disclaimer-ok-button" type="button">OK</button>
       </div>
@@ -130,13 +138,13 @@
   <dialog class="modal" id="database-modal" aria-labelledby="database-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Biblioteca documental</p>
-        <h2 id="database-title">Base de dados</h2>
+        <p class="section-kicker" data-i18n="database.kicker">Biblioteca documental</p>
+        <h2 id="database-title" data-i18n="database.title">Base de dados</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content">
-      <p id="database-summary" class="modal-intro">Consultando documentos…</p>
+      <p id="database-summary" class="modal-intro" data-i18n="database.loading">Consultando documentos…</p>
       <ul id="database-list" class="document-list"></ul>
     </div>
   </dialog>
@@ -144,44 +152,44 @@
   <dialog class="modal" id="about-modal" aria-labelledby="about-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Créditos</p>
-        <h2 id="about-title">Sobre</h2>
+        <p class="section-kicker" data-i18n="about.kicker">Créditos</p>
+        <h2 id="about-title" data-i18n="about.title">Sobre</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content about-content">
       <img src="{{ url_for('static', path='/logo-magisteria.png') }}" alt="" class="about-logo">
-      <p>Concebido e desenvolvido mediante IA (Codex OpenIA) por Aloysio Telles de Moraes Netto - aloysiotmn@hotmail.com - @aloysiotelles</p>
+      <p data-i18n="about.credit">Concebido e desenvolvido mediante IA (Codex OpenAI) por Aloysio Telles de Moraes Netto - aloysiotmn@hotmail.com - @aloysiotelles</p>
     </div>
   </dialog>
 
   <dialog class="modal" id="change-password-modal" aria-labelledby="change-password-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Segurança</p>
-        <h2 id="change-password-title">Alterar senha</h2>
+        <p class="section-kicker" data-i18n="password.kicker">Segurança</p>
+        <h2 id="change-password-title" data-i18n="password.title">Alterar senha</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content">
       <form id="change-password-form" class="auth-form">
         <label>
-          Senha atual
+          <span data-i18n="password.current">Senha atual</span>
           <input id="current-password" type="password" autocomplete="current-password" required>
         </label>
         <label>
-          Nova senha
+          <span data-i18n="password.new">Nova senha</span>
           <input id="new-password" type="password" autocomplete="new-password" minlength="8"
             pattern="(?=.*[a-záéíóúàâêôãõç])(?=.*[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ])(?=.*[0-9]).{8,}"
-            title="Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número." required>
+            title="Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número." data-i18n-title="password.requirementsTitle" required>
         </label>
         <label>
-          Confirmar nova senha
+          <span data-i18n="password.confirm">Confirmar nova senha</span>
           <input id="confirm-password" type="password" autocomplete="new-password" minlength="8" required>
         </label>
-        <p class="modal-intro">A nova senha deve ter pelo menos 8 caracteres, uma letra maiúscula, uma minúscula e um número.</p>
+        <p class="modal-intro" data-i18n="password.requirements">A nova senha deve ter pelo menos 8 caracteres, uma letra maiúscula, uma minúscula e um número.</p>
         <div class="actions">
-          <button class="button button-primary" id="change-password-submit" type="submit">Salvar nova senha</button>
+          <button class="button button-primary" id="change-password-submit" type="submit" data-i18n="password.save">Salvar nova senha</button>
         </div>
         <p id="change-password-status" class="presentation-status" aria-live="polite"></p>
       </form>
@@ -191,43 +199,43 @@
   <dialog class="modal" id="subscription-modal" aria-labelledby="subscription-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Plano e acesso</p>
-        <h2 id="subscription-title">Assinatura</h2>
+        <p class="section-kicker" data-i18n="subscription.kicker">Plano e acesso</p>
+        <h2 id="subscription-title" data-i18n="subscription.title">Assinatura</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content subscription-content">
-      <p id="subscription-summary" class="modal-intro">Consultando sua assinatura...</p>
+      <p id="subscription-summary" class="modal-intro" data-i18n="subscription.loading">Consultando sua assinatura...</p>
       <div class="subscription-box">
-        <h3>Acesso gratuito</h3>
-        <p>3 consultas por dia, 1 roteiro e 1 slide.</p>
+        <h3 data-i18n="subscription.freeTitle">Acesso gratuito</h3>
+        <p data-i18n="subscription.freeDescription">3 consultas por dia, 1 roteiro e 1 slide.</p>
       </div>
       <div class="subscription-box highlighted">
-        <h3>Acesso completo</h3>
-          <p>Liberação total após confirmação segura do Asaas. <strong id="payment-price"></strong></p>
+        <h3 data-i18n="subscription.fullTitle">Acesso completo</h3>
+          <p><span data-i18n="subscription.fullDescription">Liberação total após confirmação segura do Asaas.</span> <strong id="payment-price"></strong></p>
           <label class="payment-document-field" for="payment-document">
-            CPF ou CNPJ do assinante
-            <input id="payment-document" type="text" inputmode="numeric" autocomplete="off" maxlength="18" placeholder="Somente para identificação no Asaas">
-            <small>O número é enviado diretamente ao Asaas e não é armazenado pelo MagisterIA.</small>
+            <span data-i18n="subscription.document">CPF ou CNPJ do assinante</span>
+            <input id="payment-document" type="text" inputmode="numeric" autocomplete="off" maxlength="18" placeholder="Somente para identificação no Asaas" data-i18n-placeholder="subscription.documentPlaceholder">
+            <small data-i18n="subscription.documentPrivacy">O número é enviado diretamente ao Asaas e não é armazenado pelo MagisterIA.</small>
           </label>
-          <button class="button button-primary payment-link" id="payment-checkout-button" type="button">Assinar com Asaas</button>
+          <button class="button button-primary payment-link" id="payment-checkout-button" type="button" data-i18n="subscription.checkout">Assinar com Asaas</button>
         <p id="payment-status" class="presentation-status" aria-live="polite"></p>
       </div>
       <form id="coupon-form" class="auth-form coupon-form">
         <label>
-          Cupom
-          <input id="coupon-input" type="text" autocomplete="off" placeholder="Digite o código do cupom">
+          <span data-i18n="subscription.coupon">Cupom</span>
+          <input id="coupon-input" type="text" autocomplete="off" placeholder="Digite o código do cupom" data-i18n-placeholder="subscription.couponPlaceholder">
         </label>
         <div class="actions">
-          <button class="button button-secondary" id="coupon-submit" type="submit">Aplicar cupom</button>
+          <button class="button button-secondary" id="coupon-submit" type="submit" data-i18n="subscription.applyCoupon">Aplicar cupom</button>
         </div>
         <p id="coupon-status" class="presentation-status" aria-live="polite"></p>
       </form>
       {% if user.role == "admin" %}
       <div class="subscription-box admin-box">
         <h3>Admin</h3>
-        <p>Você pode rever a modalidade gratuita sem alterar os demais cadastros.</p>
-        <button class="button button-secondary" id="toggle-free-access-button" type="button">Revisar acesso gratuito</button>
+        <p data-i18n="subscription.adminText">Você pode rever a modalidade gratuita sem alterar os demais cadastros.</p>
+        <button class="button button-secondary" id="toggle-free-access-button" type="button" data-i18n="subscription.reviewFree">Revisar acesso gratuito</button>
       </div>
       {% endif %}
     </div>
@@ -236,13 +244,13 @@
   <dialog class="modal admin-modal" id="stats-modal" aria-labelledby="stats-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Administração</p>
-        <h2 id="stats-title">Estatísticas</h2>
+        <p class="section-kicker" data-i18n="admin.kicker">Administração</p>
+        <h2 id="stats-title" data-i18n="admin.statsTitle">Estatísticas</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content">
-      <p id="stats-summary" class="modal-intro">Consultando usuários...</p>
+      <p id="stats-summary" class="modal-intro" data-i18n="admin.statsLoading">Consultando usuários...</p>
       <div class="table-wrap"><table class="admin-table" id="stats-table"></table></div>
     </div>
   </dialog>
@@ -250,28 +258,28 @@
   <dialog class="modal admin-modal" id="coupons-modal" aria-labelledby="coupons-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Administração</p>
-        <h2 id="coupons-title">Cupons promocionais</h2>
+        <p class="section-kicker" data-i18n="admin.kicker">Administração</p>
+        <h2 id="coupons-title" data-i18n="admin.couponsTitle">Cupons promocionais</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content">
       <form id="admin-coupon-form" class="coupon-admin-form">
         <label>
-          Palavra do cupom
-          <input id="admin-coupon-code" type="text" maxlength="40" autocomplete="off" placeholder="Ex.: CATEQUESE" required>
+          <span data-i18n="admin.couponWord">Palavra do cupom</span>
+          <input id="admin-coupon-code" type="text" maxlength="40" autocomplete="off" placeholder="Ex.: CATEQUESE" data-i18n-placeholder="admin.couponPlaceholder" required>
         </label>
         <label>
-          Prazo de validade
+          <span data-i18n="admin.validity">Prazo de validade</span>
           <select id="admin-coupon-validity" required>
-            <option value="dia">Um dia</option>
-            <option value="semana">Uma semana</option>
-            <option value="mes">Um mês</option>
+            <option value="dia" data-i18n="admin.oneDay">Um dia</option>
+            <option value="semana" data-i18n="admin.oneWeek">Uma semana</option>
+            <option value="mes" data-i18n="admin.oneMonth">Um mês</option>
           </select>
         </label>
-        <button class="button button-primary" id="admin-coupon-submit" type="submit">Criar cupom</button>
+        <button class="button button-primary" id="admin-coupon-submit" type="submit" data-i18n="admin.createCoupon">Criar cupom</button>
       </form>
-      <p id="coupons-summary" class="modal-intro">Consultando cupons...</p>
+      <p id="coupons-summary" class="modal-intro" data-i18n="admin.couponsLoading">Consultando cupons...</p>
       <div class="table-wrap"><table class="admin-table" id="coupons-table"></table></div>
     </div>
   </dialog>
@@ -279,20 +287,20 @@
   <dialog class="modal admin-modal" id="admin-documents-modal" aria-labelledby="admin-documents-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Administração</p>
-        <h2 id="admin-documents-title">Base documental</h2>
+        <p class="section-kicker" data-i18n="admin.kicker">Administração</p>
+        <h2 id="admin-documents-title" data-i18n="admin.documentsTitle">Base documental</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content">
       <form id="document-upload-form" class="upload-form">
         <input id="document-upload" type="file" accept=".pdf,.docx,.txt,.md,.markdown" required>
-        <button class="button button-primary" type="submit">Incluir documento</button>
+        <button class="button button-primary" type="submit" data-i18n="admin.addDocument">Incluir documento</button>
       </form>
-      <p id="admin-documents-summary" class="modal-intro">Consultando documentos...</p>
+      <p id="admin-documents-summary" class="modal-intro" data-i18n="admin.documentsLoading">Consultando documentos...</p>
       <div class="table-wrap"><table class="admin-table" id="admin-documents-table"></table></div>
       <div class="actions">
-        <button class="button button-secondary" id="reindex-documents-button" type="button">Reindexar base</button>
+        <button class="button button-secondary" id="reindex-documents-button" type="button" data-i18n="admin.reindex">Reindexar base</button>
       </div>
     </div>
   </dialog>
@@ -300,17 +308,18 @@
   <dialog class="modal admin-modal" id="rag-diagnostics-modal" aria-labelledby="rag-diagnostics-title">
     <div class="modal-header">
       <div>
-        <p class="section-kicker">Administração</p>
-        <h2 id="rag-diagnostics-title">Diagnóstico RAG</h2>
+        <p class="section-kicker" data-i18n="admin.kicker">Administração</p>
+        <h2 id="rag-diagnostics-title" data-i18n="admin.ragTitle">Diagnóstico RAG</h2>
       </div>
-      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-i18n-aria-label="common.close" data-close-modal>×</button>
     </div>
     <div class="modal-content">
-      <p id="rag-diagnostics-summary" class="modal-intro">Consultando execuções do RAG...</p>
+      <p id="rag-diagnostics-summary" class="modal-intro" data-i18n="admin.ragLoading">Consultando execuções do RAG...</p>
       <div class="table-wrap"><table class="admin-table" id="rag-diagnostics-table"></table></div>
     </div>
   </dialog>
   {% endif %}
+  <script src="{{ url_for('static', path='/i18n.js') }}?v={{ app_version }}" defer></script>
   <script src="{{ url_for('static', path='/app.js') }}?v={{ app_version }}" defer></script>
 </body>
 </html>

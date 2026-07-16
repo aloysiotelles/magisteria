@@ -18,6 +18,7 @@ from openai import APIConnectionError, APIStatusError, RateLimitError
 from PIL import Image, ImageDraw
 
 from services.editorial_style import PRESENTATION_WRITING_STANDARD
+from services.localization import localized_writing_standard, normalize_language, presentation_language_instruction
 
 
 MIN_PRESENTATION_TOPICS = 10
@@ -40,12 +41,12 @@ class PresentationService:
         self.image_concurrency = max(1, min(image_concurrency, 6))
         self.image_quality = image_quality
 
-    async def create_plan(self, title: str, answer: str) -> dict:
+    async def create_plan(self, title: str, answer: str, language: str = "pt-BR") -> dict:
         if not self.client:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
         response = await self.client.responses.create(
             model=self.text_model,
-            instructions=self._plan_instructions(),
+            instructions=self._plan_instructions(language),
             input=f"TÍTULO: {title}\n\nCONTEÚDO: {answer}",
             text={"format": {"type": "json_schema", "name": "roteiro", "strict": True, "schema": {
                 "type": "object", "properties": {
@@ -62,7 +63,7 @@ class PresentationService:
         return json.loads(response.output_text)
 
     @staticmethod
-    def _plan_instructions() -> str:
+    def _plan_instructions(language: str = "pt-BR") -> str:
         return (
             "Organize exclusivamente o conteúdo fornecido em 10 a 14 tópicos para uma pregação ou palestra. "
             "Não acrescente fatos, citações ou referências externas. Cada tópico deve ter título curto, "
@@ -70,13 +71,31 @@ class PresentationService:
             "menores para que a apresentação tenha ritmo, progressão e mais slides. Crie também um título "
             "de capa marcante, coerente e com no máximo 7 palavras, e uma frase final de até 24 palavras que "
             "resuma a mensagem central. Responda somente em JSON válido. "
-            f"{PRESENTATION_WRITING_STANDARD}"
+            f"{presentation_language_instruction(language)} "
+            f"{localized_writing_standard(PRESENTATION_WRITING_STANDARD, language)}"
         )
 
-    async def create_outline(self, title: str, answer: str) -> list[dict]:
-        return (await self.create_plan(title, answer))["topicos"]
+    async def create_outline(self, title: str, answer: str, language: str = "pt-BR") -> list[dict]:
+        return (await self.create_plan(title, answer, language))["topicos"]
 
-    def create_docx(self, title: str, topics: list[dict]) -> bytes:
+    def create_docx(self, title: str, topics: list[dict], language: str = "pt-BR") -> bytes:
+        labels = {
+            "pt-BR": {
+                "kicker": "MAGISTERIA · ROTEIRO PARA PREGAÇÃO OU PALESTRA",
+                "intro": "Tópicos organizados a partir da pesquisa realizada no MAGISTERIA.",
+                "footer": "MAGISTERIA · Conteúdo fundamentado na pesquisa selecionada",
+            },
+            "en": {
+                "kicker": "MAGISTERIA · SERMON OR LECTURE OUTLINE",
+                "intro": "Topics organized from the research conducted in MAGISTERIA.",
+                "footer": "MAGISTERIA · Content grounded in the selected research",
+            },
+            "es": {
+                "kicker": "MAGISTERIA · GUION PARA PREDICACIÓN O CONFERENCIA",
+                "intro": "Temas organizados a partir de la investigación realizada en MAGISTERIA.",
+                "footer": "MAGISTERIA · Contenido fundamentado en la investigación seleccionada",
+            },
+        }[normalize_language(language)]
         doc = Document()
         section = doc.sections[0]
         section.top_margin = section.bottom_margin = Inches(0.8)
@@ -88,7 +107,7 @@ class PresentationService:
         doc.styles["Heading 1"].font.color.rgb = RGBColor(91, 55, 28)
         kicker = doc.add_paragraph()
         kicker.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = kicker.add_run("MAGISTERIA · ROTEIRO PARA PREGAÇÃO OU PALESTRA")
+        run = kicker.add_run(labels["kicker"])
         run.bold = True
         run.font.size = Pt(9)
         run.font.color.rgb = RGBColor(174, 124, 55)
@@ -99,7 +118,7 @@ class PresentationService:
         title_run.font.name = "Aptos Display"
         title_run.font.size = Pt(25)
         title_run.font.color.rgb = RGBColor(54, 38, 29)
-        doc.add_paragraph("Tópicos organizados a partir da pesquisa realizada no MAGISTERIA.").alignment = WD_ALIGN_PARAGRAPH.CENTER
+        doc.add_paragraph(labels["intro"]).alignment = WD_ALIGN_PARAGRAPH.CENTER
         for number, topic in enumerate(topics, 1):
             doc.add_heading(f"{number}. {topic['titulo']}", level=1)
             doc.add_paragraph(topic["sintese"])
@@ -107,7 +126,7 @@ class PresentationService:
                 doc.add_paragraph(point, style="List Bullet")
         footer = section.footer.paragraphs[0]
         footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        footer.add_run("MAGISTERIA · Conteúdo fundamentado na pesquisa selecionada").font.size = Pt(8)
+        footer.add_run(labels["footer"]).font.size = Pt(8)
         output = BytesIO()
         doc.save(output)
         return output.getvalue()
@@ -118,12 +137,18 @@ class PresentationService:
         topics: list[dict],
         short_title: str | None = None,
         closing_phrase: str | None = None,
+        language: str = "pt-BR",
     ) -> bytes:
         from pptx import Presentation
         from pptx.util import Inches as PptInches
 
         short_title = short_title or title
-        closing_phrase = closing_phrase or "A mensagem acolhida com fé transforma a vida e renova a esperança."
+        default_closing = {
+            "pt-BR": "A mensagem acolhida com fé transforma a vida e renova a esperança.",
+            "en": "A message received in faith transforms life and renews hope.",
+            "es": "Un mensaje acogido con fe transforma la vida y renueva la esperanza.",
+        }[normalize_language(language)]
+        closing_phrase = closing_phrase or default_closing
         cover, closing = await asyncio.gather(
             self._generate_image_with_retry(
                 title,

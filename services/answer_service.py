@@ -7,6 +7,12 @@ import re
 from openai import AsyncOpenAI
 
 from services.editorial_style import JOHN_PAUL_II_WRITING_STANDARD
+from services.localization import (
+    answer_language_instruction,
+    answer_message,
+    localized_writing_standard,
+    normalize_language,
+)
 from services.query_analysis import QueryType, analyze_query
 
 
@@ -17,16 +23,11 @@ ABSOLUTE_RULE = (
     "Quando a evidência estiver fraca ou parecer insuficiente, dê preferência a aprofundar a resposta com base em A Fé Explicada, "
     "se houver trechos dessa obra entre os cadastrados, antes de concluir que a base não contém resposta."
 )
-NO_DOCUMENTS_MESSAGE = "Não encontrei conteúdo correspondente na base documental."
+NO_DOCUMENTS_MESSAGE = answer_message("no_documents")
 NOT_FOUND_MESSAGE = NO_DOCUMENTS_MESSAGE
-LOW_CONFIDENCE_MESSAGE = (
-    "Encontrei conteúdos relacionados, embora a correspondência não seja totalmente específica. "
-    "A resposta abaixo apresenta os pontos mais próximos encontrados na base."
-)
-BROAD_TOPIC_MESSAGE = (
-    "Encontrei diversos conteúdos relacionados. Como o tema é amplo, apresentarei uma visão geral."
-)
-TECHNICAL_FAILURE_MESSAGE = "Não foi possível concluir a pesquisa devido a uma falha técnica. Tente novamente."
+LOW_CONFIDENCE_MESSAGE = answer_message("low_confidence")
+BROAD_TOPIC_MESSAGE = answer_message("broad_topic")
+TECHNICAL_FAILURE_MESSAGE = answer_message("technical_failure")
 
 
 class AnswerService:
@@ -42,9 +43,33 @@ class AnswerService:
         chunks: list[dict],
         history: list[dict] | None = None,
         style_chunks: list[dict] | None = None,
+        language: str = "pt-BR",
     ) -> str:
-        result = await self.answer_with_review(question, chunks, history, style_chunks)
+        result = await self.answer_with_review(question, chunks, history, style_chunks, language)
         return result["resposta"]
+
+    async def translate_query_to_portuguese(self, query: str, source_language: str) -> str:
+        """Converte somente a consulta de recuperação; nunca traduz documentos da base."""
+        selected = normalize_language(source_language)
+        cleaned = query.strip()
+        if selected == "pt-BR" or not cleaned:
+            return cleaned
+        if not self.api_key:
+            raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
+        response = await self.client.responses.create(
+            model=self.model,
+            instructions=(
+                "Traduza a consulta do usuário para português brasileiro para uso exclusivo em uma busca documental. "
+                "Preserve nomes próprios, títulos de documentos, números, siglas, referências bíblicas e o sentido exato. "
+                "Não responda à consulta, não explique a tradução e entregue somente a consulta traduzida em texto simples."
+            ),
+            input=cleaned,
+            max_output_tokens=350,
+        )
+        translated = (response.output_text or "").strip()
+        if not translated:
+            raise RuntimeError(answer_message("technical_failure", selected))
+        return translated
 
     async def answer_with_review(
         self,
@@ -52,21 +77,31 @@ class AnswerService:
         chunks: list[dict],
         history: list[dict] | None = None,
         style_chunks: list[dict] | None = None,
+        language: str = "pt-BR",
     ) -> dict:
+        selected_language = normalize_language(language)
         if not chunks:
             return {
-                "resposta": NO_DOCUMENTS_MESSAGE,
+                "resposta": answer_message("no_documents", selected_language),
                 "status_revisao": "no_documents",
                 "motivo_revisao": "Todas as estratégias de recuperação foram executadas sem evidência documental.",
             }
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
 
-        response = await self.client.responses.create(**self._request_arguments(question, chunks, history or [], style_chunks or []))
+        response = await self.client.responses.create(
+            **self._request_arguments(question, chunks, history or [], style_chunks or [], selected_language)
+        )
         answer = (response.output_text or "").strip()
         if not answer:
-            return {"resposta": NOT_FOUND_MESSAGE, "status_revisao": "block", "motivo_revisao": "Resposta vazia do modelo principal."}
-        review = await self.review_answer(question, answer, chunks, history or [], style_chunks or [])
+            return {
+                "resposta": answer_message("no_documents", selected_language),
+                "status_revisao": "block",
+                "motivo_revisao": "Resposta vazia do modelo principal.",
+            }
+        review = await self.review_answer(
+            question, answer, chunks, history or [], style_chunks or [], selected_language
+        )
         action = review.get("action", "approve")
         if action == "approve":
             return {"resposta": answer, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
@@ -82,6 +117,7 @@ class AnswerService:
             chunks,
             review.get("reason", ""),
             history or [],
+            selected_language,
         )
         return {
             "resposta": rewritten,
@@ -95,14 +131,18 @@ class AnswerService:
         chunks: list[dict],
         history: list[dict] | None = None,
         style_chunks: list[dict] | None = None,
+        language: str = "pt-BR",
     ):
+        selected_language = normalize_language(language)
         if not chunks:
-            yield NO_DOCUMENTS_MESSAGE
+            yield answer_message("no_documents", selected_language)
             return
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
 
-        base_arguments = self._request_arguments(question, chunks, history or [], style_chunks or [])
+        base_arguments = self._request_arguments(
+            question, chunks, history or [], style_chunks or [], selected_language
+        )
         previous_response_id = None
 
         for continuation in range(3):
@@ -112,7 +152,8 @@ class AnswerService:
                     previous_response_id=previous_response_id,
                     input=(
                         "Continue exatamente do ponto em que a resposta foi interrompida. "
-                        "Não repita o texto anterior e conclua todas as seções de forma breve."
+                        "Não repita o texto anterior e conclua todas as seções de forma breve. "
+                        f"{answer_language_instruction(selected_language)}"
                     ),
                 )
 
@@ -141,7 +182,9 @@ class AnswerService:
         chunks: list[dict],
         history: list[dict] | None = None,
         style_chunks: list[dict] | None = None,
+        language: str = "pt-BR",
     ) -> dict:
+        selected_language = normalize_language(language)
         if not chunks:
             return {"approved": False, "reason": "Sem base documental suficiente."}
         if not self.api_key:
@@ -169,8 +212,9 @@ class AnswerService:
             "Use action='rewrite' quando a ideia central estiver correta, mas a formulação precise ser mais cautelosa ou breve. "
             "Use action='block' somente quando houver extrapolação inequívoca, contradição, citação indevida, erro factual ou excesso de confiança evidente. "
             "Nesse caso, suggested_answer deve conter uma recusa educada ou uma versão muito conservadora."
+            f" Qualquer suggested_answer deve obedecer a esta regra: {answer_language_instruction(selected_language)}"
             f" Verifique também a forma segundo esta regra, sem bloquear uma resposta factual apenas por estilo: "
-            f"{JOHN_PAUL_II_WRITING_STANDARD}"
+            f"{localized_writing_standard(JOHN_PAUL_II_WRITING_STANDARD, selected_language)}"
         )
         response = await self.client.responses.create(
             model=self.review_model,
@@ -201,6 +245,9 @@ class AnswerService:
             for phrase in (
                 "não encontrei", "nao encontrei", "nenhum conteúdo", "nenhum conteudo",
                 "sem base documental", "base não contém", "base nao contem",
+                "could not find", "couldn't find", "no content", "no documentary basis",
+                "no encontré", "no encontre", "ningún contenido", "ningun contenido",
+                "sin base documental", "la base no contiene",
             )
         )
 
@@ -211,6 +258,7 @@ class AnswerService:
         chunks: list[dict],
         review_reason: str,
         history: list[dict],
+        language: str = "pt-BR",
     ) -> str:
         context = "\n\n".join(
             f"[TRECHO {number} — {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
@@ -223,7 +271,8 @@ class AnswerService:
                 "que não esteja claramente apoiada. Preserve as partes válidas e responda de modo conservador. "
                 "Não use conhecimento externo. Como existem trechos recuperados, não diga que nenhum documento "
                 "foi encontrado. Se o tema for amplo, produza uma visão geral apenas dos aspectos comprovados. "
-                "Entregue somente a resposta reescrita, sem comentários sobre a revisão."
+                "Entregue somente a resposta reescrita, sem comentários sobre a revisão. "
+                f"{answer_language_instruction(language)}"
             ),
             input=(
                 f"CONSULTA:\n{question}\n\nMOTIVO DA REVISÃO:\n{review_reason}\n\n"
@@ -233,7 +282,7 @@ class AnswerService:
         )
         rewritten = (response.output_text or "").strip()
         if not rewritten or self._looks_like_absence_message(rewritten):
-            raise RuntimeError(TECHNICAL_FAILURE_MESSAGE)
+            raise RuntimeError(answer_message("technical_failure", language))
         return rewritten
 
     def _parse_review_response(self, text: str) -> dict | None:
@@ -279,7 +328,14 @@ class AnswerService:
             }
         return review
 
-    def _request_arguments(self, question: str, chunks: list[dict], history: list[dict], style_chunks: list[dict] | None = None) -> dict:
+    def _request_arguments(
+        self,
+        question: str,
+        chunks: list[dict],
+        history: list[dict],
+        style_chunks: list[dict] | None = None,
+        language: str = "pt-BR",
+    ) -> dict:
         analysis = analyze_query(question)
         context = "\n\n".join(
             f"[ORDEM {chunk.get('ordem', 1)} — {chunk.get('categoria', 'Documento')} — "
@@ -310,7 +366,7 @@ class AnswerService:
                 f"{thematic_instruction} "
                 "Não use memória, conhecimento geral, inferências externas ou pesquisa na internet. "
                 "Não mencione fontes que não estejam nos trechos. "
-                f"{JOHN_PAUL_II_WRITING_STANDARD} "
+                f"{localized_writing_standard(JOHN_PAUL_II_WRITING_STANDARD, language)} "
                 "Use as AMOSTRAS DE ESTILO DAS HOMILIAS apenas para calibrar ritmo e cadência; não retire delas "
                 "afirmações factuais para responder se elas não estiverem também apoiadas nos TRECHOS CADASTRADOS. "
                 "Comece diretamente pela resposta. Explique termos religiosos com simplicidade quando necessário. "
@@ -331,7 +387,8 @@ class AnswerService:
                 "de memória. "
                 "Não informe nem liste as fontes no corpo da resposta, pois a interface as apresentará separadamente ao final. "
                 "O histórico serve apenas para compreender perguntas de continuidade: toda afirmação da nova resposta "
-                "continua obrigada a estar apoiada nos TRECHOS CADASTRADOS desta solicitação."
+                "continua obrigada a estar apoiada nos TRECHOS CADASTRADOS desta solicitação. "
+                f"{answer_language_instruction(language)}"
             ),
             "input": (
                 f"HISTÓRICO DA CONVERSA:\n{conversation}\n\n"

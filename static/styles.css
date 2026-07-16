@@ -37,6 +37,9 @@ body::before {
 .utility-nav { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 18px; margin-bottom: -18px; flex-wrap: wrap; }
 .utility-button { border: 0; border-bottom: 1px solid transparent; padding: 7px 5px; color: var(--forest); background: transparent; font: 600 .78rem "Segoe UI", Arial, sans-serif; cursor: pointer; }
 .utility-button:hover { color: var(--red); border-bottom-color: var(--gold); }
+.language-picker { display: inline-flex; align-items: center; gap: 7px; padding: 4px 8px; border: 1px solid rgba(23, 63, 42, .18); border-radius: 999px; background: rgba(255, 255, 255, .72); color: var(--forest); font: 700 .74rem "Segoe UI", Arial, sans-serif; }
+.language-picker select { border: 0; outline: 0; background: transparent; color: var(--forest); font: 600 .76rem "Segoe UI", Arial, sans-serif; cursor: pointer; }
+.language-picker:focus-within { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(189, 133, 21, .12); }
 .user-chip { color: var(--muted); font-size: .78rem; font-weight: 700; margin-right: 4px; }
 .logout-form { margin: 0; }
 
