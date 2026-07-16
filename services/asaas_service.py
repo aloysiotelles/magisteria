@@ -50,12 +50,21 @@ class AsaasService:
     def configured(self) -> bool:
         return bool(
             self.api_key
+            and self.credentials_environment_matches
             and self.webhook_token
             and self.public_url.startswith("https://")
             and self.price > 0
             and self.billing_type in {"UNDEFINED", "BOLETO", "CREDIT_CARD", "PIX"}
             and self.api_base_url in {self.SANDBOX_URL, self.PRODUCTION_URL}
         )
+
+    @property
+    def credentials_environment_matches(self) -> bool:
+        """Impede que uma chave de homologacao seja usada contra a API real (e vice-versa)."""
+        if not self.api_key:
+            return False
+        expected_prefix = "$aact_hmlg_" if self.sandbox else "$aact_prod_"
+        return self.api_key.startswith(expected_prefix)
 
     @property
     def sandbox(self) -> bool:

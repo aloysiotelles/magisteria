@@ -518,7 +518,7 @@ def test_mercado_pago_rejects_collector_as_payer(monkeypatch):
 
 def test_asaas_subscription_contains_monthly_terms(monkeypatch):
     service = AsaasService(
-        "sandbox-key",
+        "$aact_hmlg_test-key",
         "webhook-token",
         Decimal("14.99"),
         "https://magisteria.example",
@@ -558,6 +558,27 @@ def test_asaas_subscription_contains_monthly_terms(monkeypatch):
     service.enable_callback = False
     asyncio.run(service.create_subscription("cus_123", "mag-reference-2"))
     assert "callback" not in captured["payload"]
+
+
+def test_asaas_rejects_credentials_from_the_wrong_environment():
+    common = (
+        "webhook-token-with-at-least-thirty-two-characters",
+        Decimal("14.99"),
+        "https://magisteria.example",
+    )
+    sandbox_with_production_key = AsaasService(
+        "$aact_prod_test-key", *common, AsaasService.SANDBOX_URL
+    )
+    production_with_sandbox_key = AsaasService(
+        "$aact_hmlg_test-key", *common, AsaasService.PRODUCTION_URL
+    )
+    production = AsaasService(
+        "$aact_prod_test-key", *common, AsaasService.PRODUCTION_URL
+    )
+
+    assert not sandbox_with_production_key.configured
+    assert not production_with_sandbox_key.configured
+    assert production.configured
 
 
 def test_asaas_checkout_and_webhook_control_premium(tmp_path: Path, monkeypatch):
