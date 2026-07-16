@@ -96,13 +96,49 @@ Nunca publique o arquivo `.env`. Ele já está protegido pelo `.gitignore`.
 8. `services/answer_service.py` gera exclusivamente a partir dos chunks e redige a saída no idioma selecionado.
 9. O revisor pode aprovar ou solicitar reescrita fundamentada, sempre preservando o idioma final. Ele não pode converter chunks existentes em “ausência documental”.
 10. Ausência real, tema amplo, baixa confiança e falha técnica usam estados e mensagens localizados.
-11. `services/rag_diagnostics.py` registra request ID, tempos, estratégias, contagens, scores, fontes, filtros, chunks, tokens aproximados, decisão do revisor e motivo final. Emails, números longos e segredos são redigidos.
+11. `services/rag_diagnostics.py` registra somente métricas tipadas, contagens, scores, tokens aproximados, estado e decisão do revisor. Perguntas, nomes de fontes, filtros livres, chunks e motivos textuais não são persistidos; os registros expiram pelo TTL configurado.
 
 Administradores acessam **Diagnóstico RAG** na interface e podem repetir uma recuperação sem consumir franquia. A matriz permanente está em `tests/fixtures/catholic_single_term_queries.json`. Para auditar a cobertura da base real:
 
 ```powershell
 python scripts/rag_coverage_report.py --output rag-coverage-report.csv
 ```
+
+## Aplicativos móveis
+
+O repositório inclui uma interface TypeScript/Vite empacotada com Capacitor 8 para Android e iOS. Backend, banco, usuários, documentos, IA, quotas e regras de assinatura continuam únicos no Railway.
+
+Requer Node 22+ e pnpm 11.9:
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm test:mobile
+pnpm build:web
+pnpm cap:sync
+```
+
+Android requer JDK 21, Android Studio e SDK 36:
+
+```powershell
+pnpm mobile:android
+```
+
+iOS requer um Mac com Xcode 26 ou mais recente:
+
+```bash
+pnpm mobile:ios
+```
+
+O identificador `br.com.seudominio.magisteria` é provisório. Confirme o identificador definitivo antes de criar os registros nas lojas. Não use `server.url` para produção e nunca coloque segredos em variáveis `VITE_*`.
+
+Documentação detalhada:
+
+- `docs/mobile-audit.md` e `docs/mobile-architecture.md`;
+- `docs/mobile-authentication.md` e `docs/mobile-subscriptions.md`;
+- `docs/google-play-publication.md` e `docs/apple-app-store-publication.md`;
+- `docs/mobile-testing.md`, `docs/mobile-security.md`, `docs/mobile-environment-variables.md` e `docs/mobile-release-checklist.md`.
 
 ## Estrutura
 
@@ -114,6 +150,9 @@ magister-ia/
 ├── static/              # logo, estilos e comportamento da interface
 ├── templates/           # páginas HTML
 ├── tests/               # testes automatizados
+├── mobile/              # frontend compilado do aplicativo
+├── android/             # projeto Android Capacitor
+├── ios/                 # projeto iOS Capacitor
 ├── app.py               # aplicação e rotas FastAPI
 ├── config.py            # configuração central
 └── requirements.txt
