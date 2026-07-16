@@ -4,7 +4,7 @@ Aplicativo web de pesquisa pastoral em uma base documental fechada. O sistema l�
 
 ## O que esta versão faz
 
-A versão 0.6.6 combina busca textual e orientação pelos índices internos das obras. Quando o usuário digita uma palavra isolada, a consulta nominal segue o sumário do Catecismo, o índice do Compêndio de Símbolos e o sumário de A Fé Explicada; as remissões e os contextos encontrados também orientam a varredura de toda a documentação antes de um retorno negativo.
+A versão 0.6.7 combina busca textual e orientação pelos índices internos das obras. Quando o usuário digita uma palavra isolada, a consulta nominal segue o sumário do Catecismo, o índice do Compêndio de Símbolos e o sumário de A Fé Explicada; perguntas definicionais curtas, como “o que é pecado”, também recuperam prioritariamente títulos e definições explícitas. As remissões e os contextos encontrados orientam a varredura de toda a documentação antes de um retorno negativo.
 
 - aceita arquivos PDF, DOCX, TXT e Markdown;
 - mantém um índice vetorial local e persistente;

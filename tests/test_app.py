@@ -158,6 +158,31 @@ def test_single_word_uses_nominal_index_hierarchy(tmp_path: Path):
     assert any("recusa consciente" in item["text"] for item in results)
 
 
+def test_definition_question_prioritizes_the_direct_definition(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    (documents / "Catecismo da Igreja Católica.txt").write_text(
+        "A remissão dos pecados é concedida no Batismo.\n\n"
+        "II. A definição do pecado\n1849. O pecado é uma falta contra a razão, "
+        "a verdade e a consciência reta.",
+        encoding="utf-8",
+    )
+    (documents / "A Fé Explicada.txt").write_text(
+        "SUMÁRIO\nO PECADO ATUAL ........ 71\n\n"
+        "## P?gina 71\nO PECADO ATUAL\nO pecado atual é aquele que nós mesmos cometemos.",
+        encoding="utf-8",
+    )
+    store = LocalVectorStore(documents, tmp_path / "indice.json", 180, 10)
+    store.index_documents()
+
+    for query in ("PECADO", "o que é pecado"):
+        results = store.search_ordered(query, minimum_score=0)
+        catechism = [item for item in results if "Catecismo" in item["source"]]
+        assert catechism
+        assert "definição do pecado" in catechism[0]["text"]
+        assert any("nós mesmos cometemos" in item["text"] for item in results)
+
+
 def test_single_word_searches_remaining_documents_before_negative(tmp_path: Path):
     documents = tmp_path / "Documentos"
     documents.mkdir()

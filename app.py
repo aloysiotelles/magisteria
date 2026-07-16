@@ -26,7 +26,7 @@ from services.asaas_service import AsaasError, AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 
-APP_VERSION = "0.6.6"
+APP_VERSION = "0.6.7"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(

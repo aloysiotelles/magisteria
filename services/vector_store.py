@@ -261,25 +261,37 @@ class LocalVectorStore:
         terms, expanded_terms = self._query_terms(query, preferred)
         index_guidance = self._index_guidance(query, preferred, excluded_sources)
         single_term = self._single_query_term(query)
-        context_terms = self._guidance_context_terms(terms, index_guidance) if single_term else set()
+        nominal_term = self._nominal_query_term(query)
+        context_terms = self._guidance_context_terms(terms, index_guidance) if nominal_term else set()
         expanded_terms.update(context_terms)
         ranked = []
-        candidate_rows = self._candidate_rows(query, preferred=preferred, additional_terms=context_terms)
+        candidate_rows = [] if single_term and not preferred else self._candidate_rows(
+            query,
+            preferred=preferred,
+            additional_terms=context_terms,
+        )
         known_ids = {row["id"] for row in candidate_rows}
-        if single_term and not preferred:
+        if nominal_term and not preferred:
             for _, hints, quota in NOMINAL_INDEX_SOURCES:
                 for row in self._candidate_rows(
                     query,
                     limit=max(quota * 40, 120),
                     preferred=hints,
-                    additional_terms=context_terms,
                 ):
                     if row["id"] not in known_ids:
                         row["fts_position"] = len(candidate_rows) + 1
                         candidate_rows.append(row)
                         known_ids.add(row["id"])
-        if single_term:
+            if not candidate_rows:
+                candidate_rows = self._candidate_rows(query, additional_terms=context_terms)
+                known_ids = {row["id"] for row in candidate_rows}
+        if nominal_term:
             for row in self._guided_candidate_rows(index_guidance, preferred):
+                if row["id"] not in known_ids:
+                    row["fts_position"] = len(candidate_rows) + 1
+                    candidate_rows.append(row)
+                    known_ids.add(row["id"])
+            for row in self._nominal_anchor_rows(nominal_term, preferred, excluded_sources):
                 if row["id"] not in known_ids:
                     row["fts_position"] = len(candidate_rows) + 1
                     candidate_rows.append(row)
@@ -300,10 +312,14 @@ class LocalVectorStore:
             source_bonus = 0.22 if preferred else 0
             anchor_bonus = self._topic_anchor_bonus(terms, self._paragraph_numbers(text_norm))
             index_bonus = self._index_guidance_bonus(source_norm, text_norm, index_guidance)
+            nominal_bonus = self._nominal_match_bonus(nominal_term, row["text"])
             if coverage < minimum_score and expanded_hits == 0 and index_bonus == 0:
                 continue
             note_penalty = self._note_fragment_penalty(text_norm)
-            score = coverage + min(frequency, 10) * 0.035 + fts_bonus + heading_bonus + source_bonus + anchor_bonus + index_bonus - note_penalty
+            score = (
+                coverage + min(frequency, 10) * 0.035 + fts_bonus + heading_bonus
+                + source_bonus + anchor_bonus + index_bonus + nominal_bonus - note_penalty
+            )
             ranked.append({
                 **row,
                 "score": round(score, 4),
@@ -379,9 +395,9 @@ class LocalVectorStore:
         referencias internas e depois usa essas referencias para favorecer os trechos
         doutrinais correspondentes.
         """
-        single_term = self._single_query_term(query)
-        if single_term:
-            return self._nominal_index_guidance(single_term, preferred, excluded_sources)
+        nominal_term = self._nominal_query_term(query)
+        if nominal_term:
+            return self._nominal_index_guidance(nominal_term, preferred, excluded_sources)
 
         terms, expanded_terms = self._query_terms(query, preferred)
         lookup_terms = terms | expanded_terms
@@ -529,6 +545,46 @@ class LocalVectorStore:
                         candidates.append(row_dict)
         return candidates
 
+    def _nominal_anchor_rows(
+        self,
+        term: str,
+        preferred: tuple[str, ...] = (),
+        excluded_sources: tuple[str, ...] = (),
+    ) -> list[dict]:
+        """Inclui definições e títulos que podem ficar além do corte normal do FTS."""
+        expression = f'"{term}"'
+        anchored: list[dict] = []
+        with self._connect() as db:
+            all_sources = [row[0] for row in db.execute("SELECT source FROM files ORDER BY source COLLATE NOCASE")]
+            priority_sources: list[str] = []
+            for _, hints, _ in NOMINAL_INDEX_SOURCES:
+                priority_sources.extend(
+                    source for source in all_sources
+                    if source not in priority_sources
+                    and self._source_matches(self._normalize(source), hints)
+                )
+            for source in priority_sources:
+                source_norm = self._normalize(source)
+                if preferred and not self._source_matches(source_norm, preferred):
+                    continue
+                if self._source_is_excluded(source, excluded_sources):
+                    continue
+                rows = db.execute(
+                    "SELECT id,source,location,text,bm25(chunks) rank "
+                    "FROM chunks WHERE chunks MATCH ? AND source = ? ORDER BY rank LIMIT 1600",
+                    (expression, source),
+                ).fetchall()
+                for row in rows:
+                    row_dict = dict(row)
+                    bonus = self._nominal_match_bonus(term, row_dict["text"])
+                    if bonus >= 0.9:
+                        row_dict["_nominal_anchor_bonus"] = bonus
+                        anchored.append(row_dict)
+        anchored.sort(key=lambda item: (item["_nominal_anchor_bonus"], -item["rank"]), reverse=True)
+        for item in anchored:
+            item.pop("_nominal_anchor_bonus", None)
+        return anchored[:240]
+
     @classmethod
     def _guidance_context_terms(
         cls,
@@ -553,6 +609,60 @@ class LocalVectorStore:
         if len(tokens) != 1 or tokens[0] in QUERY_STOPWORDS or len(tokens[0]) <= 2:
             return None
         return tokens[0]
+
+    @classmethod
+    def _nominal_query_term(cls, query: str) -> str | None:
+        """Reconhece uma palavra isolada ou uma pergunta curta que pede sua definição."""
+        single_term = cls._single_query_term(query)
+        if single_term:
+            return single_term
+
+        normalized = re.sub(r"\s+", " ", cls._normalize(query)).strip(" .?!:;")
+        definition_patterns = (
+            r"^(?:o )?que e (?:o |a )?(.+)$",
+            r"^(?:o )?que significa (?:o |a )?(.+)$",
+            r"^defina (?:o |a )?(.+)$",
+            r"^definicao (?:de|do|da) (?:o |a )?(.+)$",
+            r"^qual (?:e )?a definicao (?:de|do|da) (?:o |a )?(.+)$",
+        )
+        for pattern in definition_patterns:
+            match = re.match(pattern, normalized)
+            if not match:
+                continue
+            subject_tokens = [
+                token for token in TOKEN_PATTERN.findall(match.group(1))
+                if token not in QUERY_STOPWORDS and len(token) > 2
+            ]
+            if len(subject_tokens) == 1:
+                return subject_tokens[0]
+        return None
+
+    @classmethod
+    def _nominal_match_bonus(cls, term: str | None, text: str) -> float:
+        """Favorece definições e títulos nominais, em vez de ocorrências periféricas."""
+        if not term:
+            return 0.0
+        text_norm = cls._normalize(text)
+        escaped = re.escape(term)
+        if re.search(rf"\bdefinicao\s+(?:de|do|da)\s+(?:o\s+|a\s+)?{escaped}\b", text_norm):
+            return 1.7
+        if re.search(rf"\bo\s+que\s+e\s+(?:o\s+|a\s+)?{escaped}\b", text_norm):
+            return 1.55
+        for raw_line in text.splitlines():
+            line_norm = cls._normalize(raw_line).strip(" .;:-")
+            if not re.search(rf"\b{escaped}\b", line_norm):
+                continue
+            if re.fullmatch(rf"(?:[ivxlcdm]+[.)]?\s*)?(?:o\s+|a\s+)?{escaped}", line_norm):
+                return 1.35
+            if len(line_norm) <= 120 and re.search(
+                rf"\b(?:definicao|essencia|natureza|raizes|origem)\b.*\b{escaped}\b|"
+                rf"\b{escaped}\b.*\b(?:definicao|essencia|natureza|raizes|origem)\b",
+                line_norm,
+            ):
+                return 1.15
+        if re.search(rf"\b{escaped}\s+e\s+(?:uma|um|a|o)\b", text_norm):
+            return 0.9
+        return 0.0
 
     @classmethod
     def _source_is_excluded(cls, source: str, excluded_sources: tuple[str, ...]) -> bool:
@@ -619,7 +729,7 @@ class LocalVectorStore:
         elif any(f"{reference}." in text_norm[:1200] for reference in item["paragraphs"]):
             bonus += 0.55
         if item["pages"] and any(
-            re.search(rf"(?:pagina|\[p\.)\s*{re.escape(page)}\b", text_norm)
+            re.search(rf"(?:pagina|p.gina|\[p\.)\s*{re.escape(page)}\b", text_norm)
             for page in item["pages"]
         ):
             bonus += 0.75
