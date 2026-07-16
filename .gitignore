@@ -1,6 +1,8 @@
 .env
 .git-deploy/
 .venv/
+node_modules/
+mobile/dist/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -8,6 +10,10 @@ tests/.tmp-*/
 .test-temp*/
 .test-tmp*/
 test-output/
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
 banco_vetorial/*
 !banco_vetorial/.gitkeep
 Documentos/*

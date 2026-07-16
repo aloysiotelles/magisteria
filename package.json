@@ -7,9 +7,45 @@
     "start": "python -m uvicorn app:app --host 0.0.0.0 --port 8000",
     "dev": "python -m uvicorn app:app --reload",
     "test": "python -m pytest",
-    "build": "python -m compileall -q app.py config.py services tests"
+    "build": "python -m compileall -q app.py config.py services tests",
+    "build:web": "node mobile/scripts/validate-env.mjs && vite build --config mobile/vite.config.ts",
+    "build:all": "pnpm build && pnpm build:web",
+    "typecheck": "tsc -p mobile/tsconfig.json --noEmit",
+    "lint": "eslint mobile/src mobile/vite.config.ts",
+    "test:mobile": "vitest run --config mobile/vitest.config.ts",
+    "cap:sync": "cap sync && node mobile/scripts/normalize-spm-paths.mjs",
+    "cap:sync:android": "cap sync android",
+    "cap:sync:ios": "cap sync ios && node mobile/scripts/normalize-spm-paths.mjs",
+    "cap:android": "cap open android",
+    "cap:ios": "cap open ios",
+    "mobile:android": "pnpm build:web && pnpm cap:sync:android && pnpm cap:android",
+    "mobile:ios": "pnpm build:web && pnpm cap:sync:ios && pnpm cap:ios"
   },
+  "packageManager": "pnpm@11.9.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@aparajita/capacitor-secure-storage": "^8.0.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/browser": "^8.0.4",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/file-transfer": "^2.0.4",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/keyboard": "^8.0.5",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/share": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/cli": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.7.0",
+    "typescript": "6.0.0-beta",
+    "typescript-eslint": "^8.64.0",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }
