@@ -39,6 +39,7 @@ class Settings:
     IMAGE_QUALITY = os.getenv("IMAGE_QUALITY", "low").strip()
     MAX_CONTEXT_CHUNKS = int(os.getenv("MAX_CONTEXT_CHUNKS", "16"))
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.08"))
+    RAG_DEBUG = os.getenv("RAG_DEBUG", "false").strip().lower() in {"1", "true", "yes", "sim"}
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1100"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
     APP_PUBLIC_URL = _public_url()

@@ -4,6 +4,7 @@ const searchButton = document.querySelector("#search-button");
 const statusElement = document.querySelector("#base-status");
 const resultPanel = document.querySelector("#result-panel");
 const answerStatusElement = document.querySelector("#answer-status");
+const retrievalNoticeElement = document.querySelector("#retrieval-notice");
 const answerElement = document.querySelector("#answer");
 const sourcesElement = document.querySelector("#sources");
 const messagePanel = document.querySelector("#message-panel");
@@ -64,6 +65,10 @@ const adminDocumentsButton = document.querySelector("#admin-documents-button");
 const adminDocumentsModal = document.querySelector("#admin-documents-modal");
 const adminDocumentsSummary = document.querySelector("#admin-documents-summary");
 const adminDocumentsTable = document.querySelector("#admin-documents-table");
+const ragDiagnosticsButton = document.querySelector("#rag-diagnostics-button");
+const ragDiagnosticsModal = document.querySelector("#rag-diagnostics-modal");
+const ragDiagnosticsSummary = document.querySelector("#rag-diagnostics-summary");
+const ragDiagnosticsTable = document.querySelector("#rag-diagnostics-table");
 const documentUploadForm = document.querySelector("#document-upload-form");
 const documentUpload = document.querySelector("#document-upload");
 const reindexDocumentsButton = document.querySelector("#reindex-documents-button");
@@ -542,6 +547,63 @@ if (adminDocumentsButton) {
   });
 }
 
+async function loadRagDiagnostics() {
+  ragDiagnosticsSummary.textContent = "Consultando execuções do RAG...";
+  renderTable(ragDiagnosticsTable, [], []);
+  const data = await request("/admin/rag/diagnosticos?limit=100");
+  ragDiagnosticsSummary.textContent = `${data.consultas.length} consulta(s) recente(s). O modo detalhado depende de RAG_DEBUG.`;
+  renderTable(
+    ragDiagnosticsTable,
+    ["Data", "Consulta", "Tipo", "Tempo", "Candidatos", "Chunks", "Melhor score", "Status", "Documentos", "Validador", "Ação"],
+    data.consultas.map(item => {
+      const repeat = document.createElement("button");
+      repeat.type = "button";
+      repeat.textContent = "Repetir busca";
+      repeat.addEventListener("click", async () => {
+        repeat.disabled = true;
+        ragDiagnosticsSummary.textContent = `Repetindo "${item.query_text}" sem cobrar franquia...`;
+        try {
+          const result = await request("/admin/rag/repetir", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pergunta: item.query_text }),
+          });
+          const counts = result.diagnostico?.candidate_counts || {};
+          ragDiagnosticsSummary.textContent = `Busca concluída em ${result.tempo_ms} ms: ${result.fontes.length} fonte(s). Estratégias: ${JSON.stringify(counts)}.`;
+        } catch (error) {
+          ragDiagnosticsSummary.textContent = error.message;
+        } finally {
+          repeat.disabled = false;
+        }
+      });
+      return [
+        formatAdminDate(item.created_at),
+        item.query_text,
+        item.query_type,
+        `${item.duration_ms} ms`,
+        item.candidate_count,
+        item.final_count,
+        item.best_score == null ? "-" : Number(item.best_score).toFixed(3),
+        item.status,
+        (item.documents || []).join("; "),
+        item.validator?.decision || "-",
+        repeat,
+      ];
+    }),
+  );
+}
+
+if (ragDiagnosticsButton) {
+  ragDiagnosticsButton.addEventListener("click", async () => {
+    ragDiagnosticsModal.showModal();
+    try {
+      await loadRagDiagnostics();
+    } catch (error) {
+      ragDiagnosticsSummary.textContent = error.message;
+    }
+  });
+}
+
 if (reindexDocumentsButton) {
   reindexDocumentsButton.addEventListener("click", async () => {
     reindexDocumentsButton.disabled = true;
@@ -693,7 +755,7 @@ form.addEventListener("submit", async event => {
   event.preventDefault();
   clearMessage();
   const pergunta = questionField.value.trim();
-  if (pergunta.length < 3) return showMessage("Digite uma pergunta com pelo menos 3 caracteres.");
+  if (!pergunta.length) return showMessage("Digite uma pergunta ou um tema para pesquisar.");
 
   searchButton.disabled = true;
   questionField.disabled = true;
@@ -716,6 +778,10 @@ form.addEventListener("submit", async event => {
 
     archiveCurrentResult();
     answerElement.textContent = "";
+    if (retrievalNoticeElement) {
+      retrievalNoticeElement.textContent = "";
+      retrievalNoticeElement.classList.add("hidden");
+    }
     renderReviewStatus("");
     presentationModule.classList.add("hidden");
     presentationStatus.textContent = "";
@@ -741,6 +807,10 @@ form.addEventListener("submit", async event => {
         if (item.tipo === "fontes") {
           renderSources(item.fontes);
           abntReferences = item.referencias_abnt || "";
+          if (retrievalNoticeElement && item.mensagem_busca) {
+            retrievalNoticeElement.textContent = item.mensagem_busca;
+            retrievalNoticeElement.classList.remove("hidden");
+          }
         }
         if (item.tipo === "texto") {
           answerElement.textContent += item.texto;

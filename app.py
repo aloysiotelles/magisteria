@@ -19,14 +19,23 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from config import BASE_DIR, settings
-from services.answer_service import AnswerService, format_abnt_references, format_sources
+from services.answer_service import (
+    AnswerService,
+    BROAD_TOPIC_MESSAGE,
+    LOW_CONFIDENCE_MESSAGE,
+    TECHNICAL_FAILURE_MESSAGE,
+    format_abnt_references,
+    format_sources,
+)
 from services.auth_repository import AuthRepository
 from services.presentation_service import PresentationService, safe_filename
 from services.asaas_service import AsaasError, AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
+from services.query_analysis import QueryType, analyze_query
+from services.rag_diagnostics import RAGDiagnosticsRepository, new_request_id, redact_query
 
-APP_VERSION = "0.6.7"
+APP_VERSION = "0.7.0"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -37,6 +46,7 @@ vector_store = LocalVectorStore(
 )
 answer_service = AnswerService(settings.OPENAI_API_KEY, settings.OPENAI_MODEL, settings.OPENAI_REVIEW_MODEL)
 auth_repository = AuthRepository(settings.APP_DATABASE_FILE)
+rag_diagnostics = RAGDiagnosticsRepository(settings.APP_DATABASE_FILE, settings.RAG_DEBUG)
 presentation_service = PresentationService(
     settings.OPENAI_API_KEY,
     settings.OPENAI_MODEL,
@@ -859,7 +869,7 @@ class ConversationTurn(BaseModel):
 
 
 class QuestionRequest(BaseModel):
-    pergunta: str = Field(min_length=3, max_length=2000)
+    pergunta: str = Field(min_length=1, max_length=2000)
     historico: list[ConversationTurn] = Field(default_factory=list, max_length=6)
 
 
@@ -888,6 +898,61 @@ def ordered_chunks(payload: QuestionRequest) -> list[dict]:
         minimum_score=settings.MIN_RELEVANCE_SCORE,
         excluded_sources=auth_repository.inactive_sources(),
     )
+
+
+def ordered_chunks_with_diagnostics(payload: QuestionRequest) -> tuple[list[dict], dict]:
+    result = vector_store.search_ordered(
+        retrieval_query(payload),
+        limit=max(settings.MAX_CONTEXT_CHUNKS, 16),
+        minimum_score=settings.MIN_RELEVANCE_SCORE,
+        excluded_sources=auth_repository.inactive_sources(),
+        include_diagnostics=True,
+    )
+    if isinstance(result, tuple):
+        chunks, diagnostics = result
+        if settings.RAG_DEBUG:
+            logger.info(
+                "rag_retrieval=%s",
+                json.dumps(
+                    {
+                        "query": redact_query(payload.pergunta),
+                        "type": diagnostics.get("query", {}).get("query_type"),
+                        "candidate_counts": diagnostics.get("candidate_counts", {}),
+                        "selected_chunks": diagnostics.get("selected_chunks", []),
+                        "threshold_policy": diagnostics.get("threshold_policy"),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+        return chunks, diagnostics
+    analysis = analyze_query(retrieval_query(payload))
+    return result, {
+        "query": analysis.to_dict(),
+        "candidate_counts": {},
+        "candidates_fused": len(result),
+        "reranking": [],
+        "selected_chunks": [],
+        "final_count": len(result),
+    }
+
+
+def retrieval_notice(chunks: list[dict], diagnostics: dict) -> str:
+    if not chunks:
+        return ""
+    query_type = diagnostics.get("query", {}).get("query_type")
+    if query_type in {QueryType.TERM.value, QueryType.PHRASE.value}:
+        return BROAD_TOPIC_MESSAGE
+    reranking = diagnostics.get("reranking", [])
+    best = max((float(item.get("score_normalized", 0)) for item in reranking), default=0)
+    strong_lexical = any("lexical_exact" in item.get("strategies", []) for item in reranking[:5])
+    if best < 0.25 and not strong_lexical:
+        return LOW_CONFIDENCE_MESSAGE
+    return ""
+
+
+def estimated_context_tokens(chunks: list[dict]) -> int:
+    return sum(max(len(str(chunk.get("text", ""))) // 4, 1) for chunk in chunks)
 
 
 def homily_style_chunks(payload: QuestionRequest) -> list[dict]:
@@ -943,20 +1008,44 @@ async def ask(payload: QuestionRequest, request: Request):
     if not allowed:
         raise HTTPException(status_code=403, detail=message)
     question = payload.pergunta.strip()
-    chunks = await asyncio.to_thread(ordered_chunks, payload)
+    request_id = new_request_id()
+    started = time.monotonic()
+    chunks, diagnostics = await asyncio.to_thread(ordered_chunks_with_diagnostics, payload)
     style_chunks = await asyncio.to_thread(homily_style_chunks, payload) if chunks else []
     history = [turn.model_dump() for turn in payload.historico]
     try:
         result = await answer_service.answer_with_review(question, chunks, history, style_chunks)
     except RuntimeError as exc:
+        await asyncio.to_thread(
+            rag_diagnostics.record, request_id, question, diagnostics,
+            round((time.monotonic() - started) * 1000), "technical_failure",
+            error=str(exc), final_reason=TECHNICAL_FAILURE_MESSAGE,
+            context_tokens=estimated_context_tokens(chunks),
+        )
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Não foi possível consultar o serviço de IA agora.") from exc
+        await asyncio.to_thread(
+            rag_diagnostics.record, request_id, question, diagnostics,
+            round((time.monotonic() - started) * 1000), "technical_failure",
+            error=type(exc).__name__, final_reason=TECHNICAL_FAILURE_MESSAGE,
+            context_tokens=estimated_context_tokens(chunks),
+        )
+        raise HTTPException(status_code=502, detail=TECHNICAL_FAILURE_MESSAGE) from exc
     auth_repository.increment_usage(user["id"], "query")
+    await asyncio.to_thread(
+        rag_diagnostics.record, request_id, question, diagnostics,
+        round((time.monotonic() - started) * 1000),
+        "success" if chunks else "no_documents",
+        validator={"decision": result["status_revisao"], "reason": result["motivo_revisao"]},
+        final_reason=result["motivo_revisao"],
+        context_tokens=estimated_context_tokens(chunks),
+    )
     return {
+        "request_id": request_id,
         "resposta": result["resposta"],
         "status_revisao": result["status_revisao"],
         "motivo_revisao": result["motivo_revisao"],
+        "mensagem_busca": retrieval_notice(chunks, diagnostics),
         "fontes": format_sources(chunks),
     }
 
@@ -971,7 +1060,9 @@ async def ask_stream(payload: QuestionRequest, request: Request):
         raise HTTPException(status_code=403, detail=message)
 
     question = payload.pergunta.strip()
-    chunks = await asyncio.to_thread(ordered_chunks, payload)
+    request_id = new_request_id()
+    started = time.monotonic()
+    chunks, diagnostics = await asyncio.to_thread(ordered_chunks_with_diagnostics, payload)
     style_chunks = await asyncio.to_thread(homily_style_chunks, payload) if chunks else []
     history = [turn.model_dump() for turn in payload.historico]
     if chunks and not answer_service.api_key:
@@ -981,6 +1072,8 @@ async def ask_stream(payload: QuestionRequest, request: Request):
         yield json.dumps(
             {
                 "tipo": "fontes",
+                "request_id": request_id,
+                "mensagem_busca": retrieval_notice(chunks, diagnostics),
                 "fontes": format_sources(chunks),
                 "referencias_abnt": format_abnt_references(chunks),
             },
@@ -988,6 +1081,14 @@ async def ask_stream(payload: QuestionRequest, request: Request):
         ) + "\n"
         try:
             result = await answer_service.answer_with_review(question, chunks, history, style_chunks)
+            await asyncio.to_thread(
+                rag_diagnostics.record, request_id, question, diagnostics,
+                round((time.monotonic() - started) * 1000),
+                "success" if chunks else "no_documents",
+                validator={"decision": result["status_revisao"], "reason": result["motivo_revisao"]},
+                final_reason=result["motivo_revisao"],
+                context_tokens=estimated_context_tokens(chunks),
+            )
             yield json.dumps(
                 {
                     "tipo": "texto",
@@ -1003,8 +1104,14 @@ async def ask_stream(payload: QuestionRequest, request: Request):
             raise
         except Exception:
             logger.exception("Falha durante a geração da resposta em fluxo.")
+            await asyncio.to_thread(
+                rag_diagnostics.record, request_id, question, diagnostics,
+                round((time.monotonic() - started) * 1000), "technical_failure",
+                error="answer_generation_failure", final_reason=TECHNICAL_FAILURE_MESSAGE,
+                context_tokens=estimated_context_tokens(chunks),
+            )
             yield json.dumps(
-                {"tipo": "erro", "mensagem": "Não foi possível consultar o serviço de IA agora."},
+                {"tipo": "erro", "mensagem": TECHNICAL_FAILURE_MESSAGE},
                 ensure_ascii=False,
             ) + "\n"
 
@@ -1133,6 +1240,30 @@ async def admin_free_access_control(payload: dict, request: Request):
 async def admin_document_base(request: Request):
     require_admin(request)
     return {"documentos": auth_repository.list_documents()}
+
+
+@app.get("/admin/rag/diagnosticos")
+async def admin_rag_diagnostics(request: Request, limit: int = 100):
+    require_admin(request)
+    return {"consultas": await asyncio.to_thread(rag_diagnostics.recent, limit)}
+
+
+@app.post("/admin/rag/repetir")
+async def admin_repeat_rag(payload: dict, request: Request):
+    require_admin(request)
+    question = str(payload.get("pergunta") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Informe a consulta que deve ser repetida.")
+    query_payload = QuestionRequest(pergunta=question)
+    started = time.monotonic()
+    chunks, diagnostics = await asyncio.to_thread(ordered_chunks_with_diagnostics, query_payload)
+    return {
+        "tempo_ms": round((time.monotonic() - started) * 1000),
+        "fontes": format_sources(chunks),
+        "diagnostico": diagnostics,
+        "mensagem_busca": retrieval_notice(chunks, diagnostics),
+        "cobrou_franquia": False,
+    }
 
 
 def safe_document_path(encoded_path: str) -> Path:

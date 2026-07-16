@@ -7,15 +7,26 @@ import re
 from openai import AsyncOpenAI
 
 from services.editorial_style import JOHN_PAUL_II_WRITING_STANDARD
+from services.query_analysis import QueryType, analyze_query
 
 
 ABSOLUTE_RULE = (
-    "Responda somente com base nos trechos fornecidos. Se os trechos não forem suficientes, "
-    "diga que não encontrou essa informação nos documentos cadastrados. "
+    "Responda somente com base nos trechos fornecidos. Se eles sustentarem apenas parte do pedido, "
+    "declare a limitação e responda somente essa parte. A mensagem de ausência documental é reservada "
+    "ao pipeline de recuperação quando nenhum trecho foi localizado; não a use quando recebeu trechos relacionados. "
     "Quando a evidência estiver fraca ou parecer insuficiente, dê preferência a aprofundar a resposta com base em A Fé Explicada, "
     "se houver trechos dessa obra entre os cadastrados, antes de concluir que a base não contém resposta."
 )
-NOT_FOUND_MESSAGE = "Não encontrei essa informação nos documentos cadastrados."
+NO_DOCUMENTS_MESSAGE = "Não encontrei conteúdo correspondente na base documental."
+NOT_FOUND_MESSAGE = NO_DOCUMENTS_MESSAGE
+LOW_CONFIDENCE_MESSAGE = (
+    "Encontrei conteúdos relacionados, embora a correspondência não seja totalmente específica. "
+    "A resposta abaixo apresenta os pontos mais próximos encontrados na base."
+)
+BROAD_TOPIC_MESSAGE = (
+    "Encontrei diversos conteúdos relacionados. Como o tema é amplo, apresentarei uma visão geral."
+)
+TECHNICAL_FAILURE_MESSAGE = "Não foi possível concluir a pesquisa devido a uma falha técnica. Tente novamente."
 
 
 class AnswerService:
@@ -43,7 +54,11 @@ class AnswerService:
         style_chunks: list[dict] | None = None,
     ) -> dict:
         if not chunks:
-            return {"resposta": NOT_FOUND_MESSAGE, "status_revisao": "block", "motivo_revisao": "Sem base documental suficiente."}
+            return {
+                "resposta": NO_DOCUMENTS_MESSAGE,
+                "status_revisao": "no_documents",
+                "motivo_revisao": "Todas as estratégias de recuperação foram executadas sem evidência documental.",
+            }
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
 
@@ -55,13 +70,24 @@ class AnswerService:
         action = review.get("action", "approve")
         if action == "approve":
             return {"resposta": answer, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
-        if action == "rewrite":
-            fallback = review.get("suggested_answer", "").strip()
-            return {"resposta": fallback or NOT_FOUND_MESSAGE, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
         fallback = review.get("suggested_answer", "").strip()
-        if fallback:
+        if action == "rewrite" and fallback and not self._looks_like_absence_message(fallback):
             return {"resposta": fallback, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
-        return {"resposta": NOT_FOUND_MESSAGE, "status_revisao": action, "motivo_revisao": review.get("reason", "")}
+
+        # O crítico pode corrigir fidelidade, mas não converter chunks existentes em
+        # "ausência documental". Uma rejeição aciona uma reescrita fundamentada.
+        rewritten = await self._grounded_rewrite(
+            question,
+            answer,
+            chunks,
+            review.get("reason", ""),
+            history or [],
+        )
+        return {
+            "resposta": rewritten,
+            "status_revisao": "rewrite",
+            "motivo_revisao": review.get("reason", "") or "Resposta ajustada para permanecer fiel aos trechos.",
+        }
 
     async def stream_answer(
         self,
@@ -71,7 +97,7 @@ class AnswerService:
         style_chunks: list[dict] | None = None,
     ):
         if not chunks:
-            yield NOT_FOUND_MESSAGE
+            yield NO_DOCUMENTS_MESSAGE
             return
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
@@ -160,8 +186,55 @@ class AnswerService:
         )
         parsed = self._parse_review_response((response.output_text or "").strip())
         if parsed is None:
-            return {"action": "block", "reason": "Não foi possível validar a resposta com segurança.", "suggested_answer": NOT_FOUND_MESSAGE}
+            return {
+                "action": "rewrite",
+                "reason": "O revisor devolveu um formato inválido; a evidência recuperada foi preservada.",
+                "suggested_answer": answer,
+            }
         return self._soften_overstrict_block(parsed, answer)
+
+    @staticmethod
+    def _looks_like_absence_message(text: str) -> bool:
+        normalized = text.casefold()
+        return any(
+            phrase in normalized
+            for phrase in (
+                "não encontrei", "nao encontrei", "nenhum conteúdo", "nenhum conteudo",
+                "sem base documental", "base não contém", "base nao contem",
+            )
+        )
+
+    async def _grounded_rewrite(
+        self,
+        question: str,
+        answer: str,
+        chunks: list[dict],
+        review_reason: str,
+        history: list[dict],
+    ) -> str:
+        context = "\n\n".join(
+            f"[TRECHO {number} — {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
+            for number, chunk in enumerate(chunks, start=1)
+        )
+        response = await self.client.responses.create(
+            model=self.review_model,
+            instructions=(
+                "Reescreva a resposta usando exclusivamente os trechos fornecidos. Remova toda afirmação "
+                "que não esteja claramente apoiada. Preserve as partes válidas e responda de modo conservador. "
+                "Não use conhecimento externo. Como existem trechos recuperados, não diga que nenhum documento "
+                "foi encontrado. Se o tema for amplo, produza uma visão geral apenas dos aspectos comprovados. "
+                "Entregue somente a resposta reescrita, sem comentários sobre a revisão."
+            ),
+            input=(
+                f"CONSULTA:\n{question}\n\nMOTIVO DA REVISÃO:\n{review_reason}\n\n"
+                f"RESPOSTA ORIGINAL:\n{answer}\n\nTRECHOS:\n{context}"
+            ),
+            max_output_tokens=1800,
+        )
+        rewritten = (response.output_text or "").strip()
+        if not rewritten or self._looks_like_absence_message(rewritten):
+            raise RuntimeError(TECHNICAL_FAILURE_MESSAGE)
+        return rewritten
 
     def _parse_review_response(self, text: str) -> dict | None:
         try:
@@ -207,6 +280,7 @@ class AnswerService:
         return review
 
     def _request_arguments(self, question: str, chunks: list[dict], history: list[dict], style_chunks: list[dict] | None = None) -> dict:
+        analysis = analyze_query(question)
         context = "\n\n".join(
             f"[ORDEM {chunk.get('ordem', 1)} — {chunk.get('categoria', 'Documento')} — "
             f"TRECHO {number} — {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
@@ -220,11 +294,20 @@ class AnswerService:
             f"[AMOSTRA DE ESTILO {number} - {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
             for number, chunk in enumerate(style_chunks or [], start=1)
         ) or "Sem amostras especificas de homilias para esta pergunta."
+        thematic_instruction = ""
+        if analysis.query_type in {QueryType.TERM, QueryType.PHRASE}:
+            thematic_instruction = (
+                "O usuário informou um tema, não necessariamente uma pergunta. Produza uma visão panorâmica "
+                "e organizada exclusivamente a partir dos trechos recuperados. Apresente apenas os principais aspectos "
+                "efetivamente encontrados e, se útil, indique subdivisões documentadas que possam ser aprofundadas. "
+                "Não trate a amplitude ou a brevidade da consulta como ausência de conteúdo. "
+            )
         return {
             "model": self.model,
             "instructions": (
                 "Você é o assistente documental do MAGISTERIA. "
                 f"REGRA ABSOLUTA: {ABSOLUTE_RULE} "
+                f"{thematic_instruction} "
                 "Não use memória, conhecimento geral, inferências externas ou pesquisa na internet. "
                 "Não mencione fontes que não estejam nos trechos. "
                 f"{JOHN_PAUL_II_WRITING_STANDARD} "
@@ -269,12 +352,12 @@ def format_sources(chunks: list[dict]) -> list[dict]:
                 "categoria": chunk.get("categoria", "Documento"),
                 "referencias": [],
                 "locais": [],
-                "relevancia": chunk["score"],
+                "relevancia": chunk.get("score", 0),
             },
         )
         item["referencias"].extend(chunk.get("referencias", []))
         item["locais"].append(chunk["location"])
-        item["relevancia"] = max(item["relevancia"], chunk["score"])
+        item["relevancia"] = max(item["relevancia"], chunk.get("score", 0))
 
     sources = []
     for item in grouped.values():

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
 import re
 import sqlite3
+import threading
+import time
 from pathlib import Path
 import unicodedata
 
 from services.document_loader import discover_documents, load_document
+from services.query_analysis import QueryAnalysis, QueryType, analyze_query
 
 
 TOKEN_PATTERN = re.compile(r"[a-z0-9à-ÿ]{2,}", re.IGNORECASE)
@@ -37,6 +41,24 @@ SOURCE_HINTS = {
     "d sistema": ("simbolos definicoes", "declaracoes-de-fe-e-moral"),
 }
 QUERY_EXPANSIONS = {
+    "pecado": {
+        "pecados", "transgressao", "culpa", "conversao", "penitencia", "perdao",
+        "mortal", "venial", "original",
+    },
+    "eucaristia": {
+        "missa", "comunhao", "sacramento", "altar", "consagracao", "transubstanciacao",
+    },
+    "maria": {
+        "virgem", "theotokos", "assuncao", "imaculada", "intercessao", "magnificat",
+    },
+    "graca": {"dom", "salvacao", "santificacao", "justificacao", "redenção"},
+    "purgatorio": {"purificacao", "mortos", "escatologia", "vida eterna"},
+    "confissao": {"penitencia", "reconciliacao", "absolvicao", "contricao", "pecados"},
+    "trindade": {"pai", "filho", "espirito", "unidade", "tres pessoas"},
+    "batismo": {"baptismo", "iniciacao", "agua", "regeneracao", "sacramento"},
+    "baptismo": {"batismo", "iniciacao", "agua", "regeneracao", "sacramento"},
+    "ressurreicao": {"ressuscitou", "ressuscitar", "pascoa", "vida eterna"},
+    "indulgencia": {"pena temporal", "remissao", "penitencia", "purgatorio"},
     "matrimonio": {
         "casamento", "conjugal", "conjuges", "esposos", "esposo", "esposa",
         "matrimonial", "indissolubilidade", "fecundidade", "familia", "consentimento",
@@ -114,6 +136,10 @@ class LocalVectorStore:
         self.index_file = index_file
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self._search_cache: OrderedDict[tuple, tuple[float, object]] = OrderedDict()
+        self._search_cache_lock = threading.RLock()
+        self._search_cache_ttl = 600
+        self._search_cache_limit = 128
         self.index_file.parent.mkdir(parents=True, exist_ok=True)
         self._prepare_database_file()
         self._initialize()
@@ -195,12 +221,35 @@ class LocalVectorStore:
                     progress_callback(position, len(documents), path.name)
             updated = datetime.now(timezone.utc).isoformat()
             db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
+        with self._search_cache_lock:
+            self._search_cache.clear()
         return self.status()
+
+    def _cached_search(self, key: tuple):
+        now = time.monotonic()
+        with self._search_cache_lock:
+            cached = self._search_cache.get(key)
+            if cached is None:
+                return None
+            created, value = cached
+            if now - created > self._search_cache_ttl:
+                self._search_cache.pop(key, None)
+                return None
+            self._search_cache.move_to_end(key)
+            return copy.deepcopy(value)
+
+    def _cache_search(self, key: tuple, value):
+        with self._search_cache_lock:
+            self._search_cache[key] = (time.monotonic(), copy.deepcopy(value))
+            self._search_cache.move_to_end(key)
+            while len(self._search_cache) > self._search_cache_limit:
+                self._search_cache.popitem(last=False)
+        return value
 
     def _query_terms(self, query: str, preferred: tuple[str, ...] = ()) -> tuple[set[str], set[str]]:
         terms = {
             term for term in TOKEN_PATTERN.findall(self._normalize(query))
-            if term not in QUERY_STOPWORDS and len(term) > 2
+            if term not in QUERY_STOPWORDS and len(term) >= 2
         }
         if preferred:
             terms -= {
@@ -254,78 +303,198 @@ class LocalVectorStore:
             candidates.append(item)
         return candidates
 
+    def _exact_candidate_rows(
+        self,
+        analysis: QueryAnalysis,
+        preferred: tuple[str, ...] = (),
+        limit: int = 500,
+    ) -> list[dict]:
+        """Executa a via lexical estrita sem substituir a consulta original."""
+        if not analysis.lexical_terms:
+            return []
+        phrase = " ".join(analysis.lexical_terms).replace('"', '""')
+        expression = f'"{phrase}"'
+        return self._fts_rows(expression, preferred, limit)
+
+    def _variant_candidate_rows(
+        self,
+        analysis: QueryAnalysis,
+        preferred: tuple[str, ...] = (),
+        limit: int = 900,
+    ) -> list[dict]:
+        if not analysis.variants:
+            return []
+        expression = " OR ".join(f'"{term}"' for term in analysis.variants)
+        return self._fts_rows(expression, preferred, limit)
+
+    def _semantic_expansion_rows(
+        self,
+        analysis: QueryAnalysis,
+        preferred: tuple[str, ...] = (),
+        limit: int = 600,
+    ) -> list[dict]:
+        related: set[str] = set()
+        for term in analysis.lexical_terms:
+            related.update(QUERY_EXPANSIONS.get(term, set()))
+            related.update(BIBLE_QUERY_EXPANSIONS.get(term, set()))
+        related -= set(analysis.variants)
+        if not related:
+            return []
+        tokens = {
+            token
+            for phrase in related
+            for token in TOKEN_PATTERN.findall(self._normalize(phrase))
+            if token not in QUERY_STOPWORDS and len(token) >= 2
+        }
+        if not tokens:
+            return []
+        expression = " OR ".join(f'"{term}"' for term in sorted(tokens))
+        return self._fts_rows(expression, preferred, limit)
+
+    def _fts_rows(self, expression: str, preferred: tuple[str, ...], limit: int) -> list[dict]:
+        with self._connect() as db:
+            if preferred:
+                sources = [
+                    row[0] for row in db.execute("SELECT source FROM files")
+                    if self._source_matches(self._normalize(row[0]), preferred)
+                ]
+                if not sources:
+                    return []
+                placeholders = ",".join("?" for _ in sources)
+                rows = db.execute(
+                    "SELECT id,source,location,text,bm25(chunks) rank FROM chunks "
+                    f"WHERE chunks MATCH ? AND source IN ({placeholders}) ORDER BY rank LIMIT ?",
+                    (expression, *sources, limit),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id,source,location,text,bm25(chunks) rank "
+                    "FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
+                    (expression, limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _metadata_candidate_rows(
+        self,
+        analysis: QueryAnalysis,
+        preferred: tuple[str, ...] = (),
+        limit_per_source: int = 24,
+    ) -> list[dict]:
+        if not analysis.lexical_terms:
+            return []
+        matches: list[dict] = []
+        with self._connect() as db:
+            sources = [row[0] for row in db.execute("SELECT source FROM files ORDER BY source COLLATE NOCASE")]
+            for source in sources:
+                source_norm = self._normalize(source)
+                if preferred and not self._source_matches(source_norm, preferred):
+                    continue
+                if not all(term in source_norm for term in analysis.lexical_terms):
+                    continue
+                rows = db.execute(
+                    "SELECT id,source,location,text,0.0 rank FROM chunks WHERE source = ? LIMIT ?",
+                    (source, limit_per_source),
+                ).fetchall()
+                matches.extend(dict(row) for row in rows)
+        return matches
+
+    @staticmethod
+    def _fuse_rankings(rankings: list[tuple[str, float, list[dict]]]) -> list[dict]:
+        """Reciprocal Rank Fusion evita comparar BM25, bônus editoriais e metadados."""
+        fused: dict[str, dict] = {}
+        for strategy, weight, rows in rankings:
+            for position, row in enumerate(rows, 1):
+                item = fused.setdefault(
+                    row["id"],
+                    {**row, "rrf_score": 0.0, "retrieval_strategies": [], "original_scores": {}},
+                )
+                item["rrf_score"] += weight / (60 + position)
+                item["retrieval_strategies"].append(strategy)
+                item["original_scores"][strategy] = row.get("rank")
+        return list(fused.values())
+
     def search(self, query: str, limit: int = 6, minimum_score: float = 0.08,
-               source_filter: tuple[str, ...] | None = None, excluded_sources: tuple[str, ...] = ()) -> list[dict]:
-        normalized_query = self._normalize(query)
+               source_filter: tuple[str, ...] | None = None, excluded_sources: tuple[str, ...] = (),
+               include_diagnostics: bool = False):
+        analysis = analyze_query(query)
+        normalized_query = analysis.folded
         preferred = source_filter or self._preferred_sources(normalized_query)
+        cache_key = (
+            normalized_query,
+            limit,
+            round(float(minimum_score), 6),
+            tuple(preferred),
+            tuple(excluded_sources),
+            bool(include_diagnostics),
+        )
+        cached = self._cached_search(cache_key)
+        if cached is not None:
+            return cached
         terms, expanded_terms = self._query_terms(query, preferred)
         index_guidance = self._index_guidance(query, preferred, excluded_sources)
         single_term = self._single_query_term(query)
         nominal_term = self._nominal_query_term(query)
         context_terms = self._guidance_context_terms(terms, index_guidance) if nominal_term else set()
         expanded_terms.update(context_terms)
-        ranked = []
-        candidate_rows = [] if single_term and not preferred else self._candidate_rows(
-            query,
-            preferred=preferred,
-            additional_terms=context_terms,
-        )
-        known_ids = {row["id"] for row in candidate_rows}
-        if nominal_term and not preferred:
-            for _, hints, quota in NOMINAL_INDEX_SOURCES:
-                for row in self._candidate_rows(
-                    query,
-                    limit=max(quota * 40, 120),
-                    preferred=hints,
-                ):
-                    if row["id"] not in known_ids:
-                        row["fts_position"] = len(candidate_rows) + 1
-                        candidate_rows.append(row)
-                        known_ids.add(row["id"])
-            if not candidate_rows:
-                candidate_rows = self._candidate_rows(query, additional_terms=context_terms)
-                known_ids = {row["id"] for row in candidate_rows}
-        if nominal_term:
-            for row in self._guided_candidate_rows(index_guidance, preferred):
-                if row["id"] not in known_ids:
-                    row["fts_position"] = len(candidate_rows) + 1
-                    candidate_rows.append(row)
-                    known_ids.add(row["id"])
-            for row in self._nominal_anchor_rows(nominal_term, preferred, excluded_sources):
-                if row["id"] not in known_ids:
-                    row["fts_position"] = len(candidate_rows) + 1
-                    candidate_rows.append(row)
-                    known_ids.add(row["id"])
+        exact_rows = self._exact_candidate_rows(analysis, preferred)
+        variant_rows = self._variant_candidate_rows(analysis, preferred)
+        expansion_rows = self._semantic_expansion_rows(analysis, preferred)
+        metadata_rows = self._metadata_candidate_rows(analysis, preferred)
+        guidance_rows = self._guided_candidate_rows(index_guidance, preferred) if nominal_term else []
+        anchor_rows = self._nominal_anchor_rows(nominal_term, preferred, excluded_sources) if nominal_term else []
+        # Fallback global obrigatório: uma via editorial nunca substitui a busca em toda a base.
+        global_rows = self._candidate_rows(query, limit=1200, additional_terms=context_terms)
+        rankings = [
+            ("lexical_exact", 2.4, exact_rows),
+            ("lexical_variant", 1.7, variant_rows),
+            ("semantic_expansion", 0.75, expansion_rows),
+            ("title_metadata", 2.1, metadata_rows),
+            ("index_guidance", 1.9, guidance_rows),
+            ("nominal_anchor", 2.0, anchor_rows),
+            ("global_fallback", 1.0, global_rows),
+        ]
+        candidate_rows = self._fuse_rankings(rankings)
+        ranked: list[dict] = []
+        eliminated: list[dict] = []
         for row in candidate_rows:
             source_norm = self._normalize(row["source"])
             if preferred and not self._source_matches(source_norm, preferred):
+                eliminated.append({"id": row["id"], "reason": "metadata_filter"})
                 continue
             if self._source_is_excluded(row["source"], excluded_sources):
+                eliminated.append({"id": row["id"], "reason": "inactive_source"})
                 continue
             text_norm = self._normalize(row["text"])
             text_terms = set(TOKEN_PATTERN.findall(text_norm))
             coverage = len(terms & text_terms) / max(len(terms), 1)
+            variant_hits = len(set(analysis.variants) & text_terms)
             expanded_hits = len(expanded_terms & text_terms)
             frequency = sum(text_norm.count(term) for term in expanded_terms)
-            fts_bonus = max(0, (320 - int(row.get("fts_position", 320))) / 320) * 0.35
             heading_bonus = 0.12 if any(term in text_norm[:260] for term in terms | expanded_terms) else 0
             source_bonus = 0.22 if preferred else 0
             anchor_bonus = self._topic_anchor_bonus(terms, self._paragraph_numbers(text_norm))
             index_bonus = self._index_guidance_bonus(source_norm, text_norm, index_guidance)
             nominal_bonus = self._nominal_match_bonus(nominal_term, row["text"])
-            if coverage < minimum_score and expanded_hits == 0 and index_bonus == 0:
+            strategies = set(row.get("retrieval_strategies", []))
+            protected = bool(
+                coverage or variant_hits or index_bonus or nominal_bonus
+                or strategies & {"lexical_exact", "title_metadata", "index_guidance", "nominal_anchor"}
+            )
+            if not protected and expanded_hits == 0:
+                eliminated.append({"id": row["id"], "reason": "no_query_evidence"})
                 continue
             note_penalty = self._note_fragment_penalty(text_norm)
             score = (
-                coverage + min(frequency, 10) * 0.035 + fts_bonus + heading_bonus
+                coverage + min(frequency, 10) * 0.035 + row.get("rrf_score", 0) * 8 + heading_bonus
                 + source_bonus + anchor_bonus + index_bonus + nominal_bonus - note_penalty
             )
             ranked.append({
                 **row,
                 "score": round(score, 4),
+                "score_normalized": round(max(score, 0) / (1 + max(score, 0)), 4),
                 "_index_chunk": self._looks_like_index_chunk(source_norm, row["text"]),
             })
-        ranked.sort(key=lambda item: (item["score"], -int(item.get("fts_position", 9999))), reverse=True)
+        ranked.sort(key=lambda item: (item["score"], item.get("rrf_score", 0)), reverse=True)
         substantive_sources = {item["source"] for item in ranked if not item["_index_chunk"]}
         ranked = [
             item for item in ranked
@@ -333,7 +502,35 @@ class LocalVectorStore:
         ]
         for item in ranked:
             item.pop("_index_chunk", None)
-        return self._diversify(ranked, limit, bool(preferred))
+        results = self._diversify(ranked, limit, bool(preferred))
+        diagnostics = {
+            "query": analysis.to_dict(),
+            "embedding": {
+                "model": None,
+                "dimension": 0,
+                "status": "not_configured_fts5_hybrid",
+            },
+            "collection": str(self.index_file),
+            "metadata_filters": list(preferred),
+            "excluded_sources": list(excluded_sources),
+            "minimum_score_requested": minimum_score,
+            "threshold_policy": "dynamic_exact_and_lexical_matches_are_protected",
+            "candidate_counts": {name: len(rows) for name, _, rows in rankings},
+            "candidates_fused": len(candidate_rows),
+            "eliminated": eliminated[:200] if include_diagnostics else [],
+            "reranking": [
+                {
+                    "id": item["id"],
+                    "source": item["source"],
+                    "score": item["score"],
+                    "score_normalized": item["score_normalized"],
+                    "strategies": item.get("retrieval_strategies", []),
+                }
+                for item in results
+            ],
+        }
+        value = (results, diagnostics) if include_diagnostics else results
+        return self._cache_search(cache_key, value)
 
     def search_ordered(
         self,
@@ -341,14 +538,20 @@ class LocalVectorStore:
         limit: int = 14,
         minimum_score: float = 0.08,
         excluded_sources: tuple[str, ...] = (),
-    ) -> list[dict]:
+        include_diagnostics: bool = False,
+    ):
         source_order = SINGLE_TERM_ORDERED_SOURCES if self._single_query_term(query) else ORDERED_SOURCES
-        candidates = self.search(
+        search_result = self.search(
             query,
             limit=300,
             minimum_score=minimum_score,
             excluded_sources=excluded_sources,
+            include_diagnostics=include_diagnostics,
         )
+        if include_diagnostics:
+            candidates, diagnostics = search_result
+        else:
+            candidates, diagnostics = search_result, None
         buckets = [[] for _ in range(len(source_order) + 1)]
         for item in candidates:
             normalized = self._normalize(item["source"])
@@ -366,7 +569,21 @@ class LocalVectorStore:
             {**item, "ordem": len(source_order) + 1, "categoria": "Demais documentos"}
             for item in buckets[-1][:remaining]
         )
-        return self._enrich_references(selected[:limit])
+        ordered = self._enrich_references(selected[:limit])
+        if diagnostics is not None:
+            diagnostics["selected_chunks"] = [
+                {
+                    "id": item["id"],
+                    "source": item["source"],
+                    "location": item["location"],
+                    "score": item["score"],
+                    "strategies": item.get("retrieval_strategies", []),
+                }
+                for item in ordered
+            ]
+            diagnostics["final_count"] = len(ordered)
+            return ordered, diagnostics
+        return ordered
 
     def _enrich_references(self, results: list[dict]) -> list[dict]:
         for item in results:
@@ -571,7 +788,7 @@ class LocalVectorStore:
                     continue
                 rows = db.execute(
                     "SELECT id,source,location,text,bm25(chunks) rank "
-                    "FROM chunks WHERE chunks MATCH ? AND source = ? ORDER BY rank LIMIT 1600",
+                    "FROM chunks WHERE chunks MATCH ? AND source = ? ORDER BY rank LIMIT 360",
                     (expression, source),
                 ).fetchall()
                 for row in rows:
@@ -606,7 +823,7 @@ class LocalVectorStore:
     @classmethod
     def _single_query_term(cls, query: str) -> str | None:
         tokens = TOKEN_PATTERN.findall(cls._normalize(query).strip())
-        if len(tokens) != 1 or tokens[0] in QUERY_STOPWORDS or len(tokens[0]) <= 2:
+        if len(tokens) != 1 or tokens[0] in QUERY_STOPWORDS or len(tokens[0]) < 2:
             return None
         return tokens[0]
 
@@ -631,7 +848,7 @@ class LocalVectorStore:
                 continue
             subject_tokens = [
                 token for token in TOKEN_PATTERN.findall(match.group(1))
-                if token not in QUERY_STOPWORDS and len(token) > 2
+                if token not in QUERY_STOPWORDS and len(token) >= 2
             ]
             if len(subject_tokens) == 1:
                 return subject_tokens[0]

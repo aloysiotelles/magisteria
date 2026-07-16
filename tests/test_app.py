@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 import hashlib
 import hmac
+import json
 import time
 
 import pymupdf
@@ -17,6 +18,8 @@ import app as application
 from services.answer_service import AnswerService, NOT_FOUND_MESSAGE, format_abnt_references, format_sources
 from services.auth_repository import AuthRepository
 from services.vector_store import LocalVectorStore
+from services.query_analysis import QueryType, analyze_query
+from services.rag_diagnostics import RAGDiagnosticsRepository
 from services.document_loader import load_document
 from services.editorial_style import HOMILY_CORPUS_PROFILE
 from services.presentation_service import PresentationService, safe_filename
@@ -199,6 +202,113 @@ def test_single_word_searches_remaining_documents_before_negative(tmp_path: Path
     assert results[0]["categoria"] == "Demais documentos"
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("PECADO", QueryType.TERM),
+        ("pecado mortal", QueryType.PHRASE),
+        ("O que é pecado mortal?", QueryType.QUESTION),
+        ("CIC 1854", QueryType.REFERENCE),
+        ("Explique a graça", QueryType.COMMAND),
+    ],
+)
+def test_query_classification_never_blocks_retrieval(query: str, expected: QueryType):
+    analysis = analyze_query(query)
+
+    assert analysis.query_type == expected
+    assert analysis.lexical_terms
+    assert analysis.expanded_queries[0] == analysis.normalized
+
+
+def test_versioned_catholic_single_term_fixture_is_complete_and_classified():
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "catholic_single_term_queries.json").read_text(encoding="utf-8")
+    )
+
+    assert fixture["version"] == 1
+    assert fixture["language"] == "pt-BR"
+    assert len(fixture["queries"]) >= 500
+    for item in fixture["queries"]:
+        analysis = analyze_query(item["term"])
+        assert analysis.query_type == QueryType.TERM, item["term"]
+        assert analysis.lexical_terms, item["term"]
+        assert analysis.expanded_queries[0] == item["term"]
+
+
+def test_required_rag_regression_queries_use_all_retrieval_paths(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    terms = [
+        "pecado", "graça", "Maria", "Eucaristia", "purgatório", "confissão",
+        "Trindade", "indulgência", "batismo", "justiça", "caridade", "escatologia",
+        "liturgia", "ressurreição",
+    ]
+    (documents / "Catecismo temático.txt").write_text(
+        "\n\n".join(f"{term}. Seção documental sobre {term}." for term in terms),
+        encoding="utf-8",
+    )
+    store = LocalVectorStore(documents, tmp_path / "indice.json", 120, 10)
+    store.index_documents()
+
+    for term in terms:
+        results, diagnostics = store.search_ordered(term.upper(), include_diagnostics=True)
+        assert results, term
+        assert diagnostics["query"]["query_type"] == "TERM"
+        assert diagnostics["candidate_counts"]["lexical_exact"] > 0
+        assert diagnostics["candidate_counts"]["global_fallback"] > 0
+
+
+def test_two_character_term_and_accent_variants_are_valid(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    (documents / "Catecismo.txt").write_text(
+        "A fé é a resposta do ser humano a Deus. A bênção é dom e encontro.",
+        encoding="utf-8",
+    )
+    store = LocalVectorStore(documents, tmp_path / "indice.json", 300, 40)
+    store.index_documents()
+
+    faith = store.search_ordered("Fé", minimum_score=0.08)
+    accented = store.search_ordered("BÊNÇÃO", minimum_score=0.08)
+    unaccented = store.search_ordered("bencao", minimum_score=0.08)
+
+    assert faith
+    assert [item["id"] for item in accented] == [item["id"] for item in unaccented]
+
+
+def test_exact_lexical_match_survives_high_requested_threshold(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    (documents / "Documento complementar.txt").write_text(
+        "Escatologia é o tema desta seção documental.", encoding="utf-8"
+    )
+    store = LocalVectorStore(documents, tmp_path / "indice.json", 300, 40)
+    store.index_documents()
+
+    results, diagnostics = store.search_ordered(
+        "ESCATOLOGIA", minimum_score=99, include_diagnostics=True
+    )
+
+    assert results
+    assert "lexical_exact" in results[0]["retrieval_strategies"]
+    assert diagnostics["threshold_policy"] == "dynamic_exact_and_lexical_matches_are_protected"
+
+
+def test_equivalent_case_queries_reuse_safe_search_cache(tmp_path: Path):
+    documents = tmp_path / "Documentos"
+    documents.mkdir()
+    (documents / "Catecismo.txt").write_text("O pecado fere a comunhão.", encoding="utf-8")
+    store = LocalVectorStore(documents, tmp_path / "indice.json", 300, 40)
+    store.index_documents()
+
+    with patch.object(store, "_exact_candidate_rows", wraps=store._exact_candidate_rows) as exact_search:
+        uppercase = store.search_ordered("PECADO", include_diagnostics=True)
+        lowercase = store.search_ordered("pecado", include_diagnostics=True)
+
+    assert exact_search.call_count == 1
+    assert [item["id"] for item in uppercase[0]] == [item["id"] for item in lowercase[0]]
+
+
 def test_editorial_bonus_does_not_make_irrelevant_chunk_relevant(tmp_path: Path):
     documents = tmp_path / "Documentos"
     documents.mkdir()
@@ -273,9 +383,11 @@ def test_answer_is_rewritten_when_reviewer_rejects(monkeypatch):
             self.calls.append(kwargs)
             if len(self.calls) == 1:
                 return SimpleNamespace(output_text="Resposta original com extrapolação.")
-            return SimpleNamespace(
-                output_text='{"action": "block", "reason": "Extrapolou a base", "suggested_answer": "Não encontrei essa informação nos documentos cadastrados."}'
-            )
+            if len(self.calls) == 2:
+                return SimpleNamespace(
+                    output_text='{"action": "block", "reason": "Extrapolou a base", "suggested_answer": "Não encontrei conteúdo correspondente na base documental."}'
+                )
+            return SimpleNamespace(output_text="Resposta reescrita apenas com o trecho cadastrado.")
 
     fake_responses = FakeResponses()
     monkeypatch.setattr(
@@ -290,10 +402,10 @@ def test_answer_is_rewritten_when_reviewer_rejects(monkeypatch):
 
     result = asyncio.run(call())
 
-    assert result["resposta"] == NOT_FOUND_MESSAGE
-    assert result["status_revisao"] == "block"
+    assert result["resposta"] == "Resposta reescrita apenas com o trecho cadastrado."
+    assert result["status_revisao"] == "rewrite"
     assert result["motivo_revisao"] == "Extrapolou a base"
-    assert len(fake_responses.calls) == 2
+    assert len(fake_responses.calls) == 3
 
 
 def test_answer_softens_generic_block_to_rewrite(monkeypatch):
@@ -911,12 +1023,12 @@ def test_routes_and_closed_base_behavior(monkeypatch):
 
     answer_response = client.post("/perguntar", json={"pergunta": "Assunto ausente na base"})
     assert answer_response.status_code == 200
-    assert answer_response.json() == {
-        "resposta": NOT_FOUND_MESSAGE,
-        "status_revisao": "block",
-        "motivo_revisao": "Sem base documental suficiente.",
-        "fontes": [],
-    }
+    answer_data = answer_response.json()
+    assert answer_data["resposta"] == NOT_FOUND_MESSAGE
+    assert answer_data["status_revisao"] == "no_documents"
+    assert answer_data["fontes"] == []
+    assert answer_data["mensagem_busca"] == ""
+    assert answer_data["request_id"]
     stream_response = client.post("/perguntar-stream", json={"pergunta": "Assunto ausente na base"})
     assert stream_response.status_code == 200
     assert '"tipo": "texto"' in stream_response.text
@@ -936,7 +1048,31 @@ def test_followup_prompt_is_inside_answer_below_presentation_buttons():
 
 def test_question_validation():
     client = authenticated_client()
-    assert client.post("/perguntar", json={"pergunta": "x"}).status_code == 422
+    assert client.post("/perguntar", json={"pergunta": ""}).status_code == 422
+    assert application.QuestionRequest(pergunta="Fé").pergunta == "Fé"
+
+
+def test_rag_diagnostics_redacts_and_persists_trace(tmp_path: Path):
+    repository = RAGDiagnosticsRepository(tmp_path / "app.sqlite", debug=True)
+    repository.record(
+        "req-1",
+        "pecado pessoa@example.com 12345678900",
+        {
+            "query": {"original": "pecado pessoa@example.com 12345678900", "normalized": "pecado", "query_type": "TERM"},
+            "candidate_counts": {"lexical_exact": 4},
+            "candidates_fused": 4,
+            "final_count": 1,
+            "reranking": [{"score": 1.2}],
+            "selected_chunks": [{"source": "Catecismo.txt"}],
+        },
+        25,
+        "success",
+    )
+
+    item = repository.recent(1)[0]
+    assert "pessoa@example.com" not in item["query_text"]
+    assert "12345678900" not in item["query_text"]
+    assert item["trace"]["candidate_counts"]["lexical_exact"] == 4
 
 
 def test_startup_reindexes_documents(monkeypatch):

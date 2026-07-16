@@ -16,6 +16,7 @@
       <button class="utility-button" id="stats-button" type="button">Estatísticas</button>
       <button class="utility-button" id="coupons-button" type="button">Cupons</button>
       <button class="utility-button" id="admin-documents-button" type="button">Base documental</button>
+      <button class="utility-button" id="rag-diagnostics-button" type="button">Diagnóstico RAG</button>
       {% endif %}
       <button class="utility-button" id="database-button" type="button">Base de dados</button>
       <button class="utility-button" id="subscription-button" type="button">Assinatura</button>
@@ -76,6 +77,7 @@
       <section id="result-panel" class="result-grid hidden" aria-live="polite">
         <article class="content-card answer-card">
           <div class="card-title"><span class="ornament">✦</span><h2>Resposta</h2></div>
+          <p id="retrieval-notice" class="review-status neutral hidden" aria-live="polite"></p>
           <p id="answer-status" class="review-status hidden" aria-live="polite"></p>
           <div id="answer" class="answer-content"></div>
           <section id="presentation-module" class="presentation-module hidden" aria-labelledby="presentation-title">
@@ -292,6 +294,20 @@
       <div class="actions">
         <button class="button button-secondary" id="reindex-documents-button" type="button">Reindexar base</button>
       </div>
+    </div>
+  </dialog>
+
+  <dialog class="modal admin-modal" id="rag-diagnostics-modal" aria-labelledby="rag-diagnostics-title">
+    <div class="modal-header">
+      <div>
+        <p class="section-kicker">Administração</p>
+        <h2 id="rag-diagnostics-title">Diagnóstico RAG</h2>
+      </div>
+      <button class="modal-close" type="button" aria-label="Fechar janela" data-close-modal>×</button>
+    </div>
+    <div class="modal-content">
+      <p id="rag-diagnostics-summary" class="modal-intro">Consultando execuções do RAG...</p>
+      <div class="table-wrap"><table class="admin-table" id="rag-diagnostics-table"></table></div>
     </div>
   </dialog>
   {% endif %}
