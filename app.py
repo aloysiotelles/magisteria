@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 import html
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +37,7 @@ from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
 from services.vector_store import LocalVectorStore
 from services.query_analysis import QueryType, analyze_query
 from services.rag_diagnostics import RAGDiagnosticsRepository, new_request_id, redact_query
+from services.subscription_service import SubscriptionService
 
 APP_VERSION = "0.8.0"
 logger = logging.getLogger(__name__)
@@ -77,6 +80,10 @@ asaas_service = AsaasService(
     settings.ASAAS_API_BASE_URL,
     settings.ASAAS_BILLING_TYPE,
     settings.ASAAS_CALLBACK_ENABLED,
+)
+subscription_service = SubscriptionService(
+    settings.GOOGLE_PLAY_PRODUCT_ID,
+    settings.APPLE_PRODUCT_ID,
 )
 index_lock = asyncio.Lock()
 indexing_state = {
@@ -142,6 +149,55 @@ app = FastAPI(
     version=APP_VERSION,
     lifespan=lifespan,
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.MOBILE_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization", "Content-Type", "X-Request-ID",
+        "X-Path", "X-Offset", "X-Complete",
+    ],
+)
+rate_limit_buckets: dict[str, deque[float]] = defaultdict(deque)
+rate_limit_lock = asyncio.Lock()
+RATE_LIMIT_RULES = {
+    "/login": (20, 300),
+    "/cadastro": (10, 300),
+    "/api/v1/mobile/auth/login": (20, 300),
+    "/api/v1/mobile/auth/register": (10, 300),
+    "/perguntar": (30, 60),
+    "/perguntar-stream": (30, 60),
+    "/api/v1/ask": (30, 60),
+    "/api/v1/ask-stream": (30, 60),
+    "/criar-roteiro": (6, 60),
+    "/criar-slides": (6, 60),
+    "/admin/upload-chunk": (120, 60),
+}
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    rule = RATE_LIMIT_RULES.get(request.url.path)
+    if not settings.RATE_LIMIT_ENABLED or not rule or request.method == "OPTIONS":
+        return await call_next(request)
+    limit, window_seconds = rule
+    client_host = request.client.host if request.client else "unknown"
+    key = f"{client_host}:{request.url.path}"
+    now = time.monotonic()
+    async with rate_limit_lock:
+        bucket = rate_limit_buckets[key]
+        while bucket and bucket[0] <= now - window_seconds:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            retry_after = max(1, round(window_seconds - (now - bucket[0])))
+            return JSONResponse(
+                {"detail": "Muitas solicitacoes. Aguarde antes de tentar novamente."},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        bucket.append(now)
+    return await call_next(request)
 
 AUTH_COOKIE = "magisteria_session"
 PUBLIC_PATHS = {
@@ -152,6 +208,14 @@ PUBLIC_PATHS = {
     "/cadastro",
     "/webhooks/mercadopago",
     "/webhooks/asaas",
+    "/api/v1/mobile/auth/login",
+    "/api/v1/mobile/auth/register",
+    "/api/v1/mobile/auth/refresh",
+    "/privacy",
+    "/terms",
+    "/support",
+    "/account-deletion",
+    "/app-version",
 }
 PUBLIC_PREFIXES = ("/static/",)
 FREE_CUPON_CODES = {code.strip().upper() for code in os.getenv("FREE_ACCESS_COUPONS", "").split(",") if code.strip()}
@@ -451,7 +515,14 @@ async def login(request: Request):
     if not user:
         return RedirectResponse(url="/login?erro=1", status_code=303)
     response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie(AUTH_COOKIE, auth_repository.create_session(user["id"]), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax")
+    response.set_cookie(
+        AUTH_COOKIE,
+        auth_repository.create_session(user["id"]),
+        max_age=60 * 60 * 24 * 30,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+    )
     return response
 
 
@@ -480,24 +551,51 @@ async def register(request: Request):
 async def logout(request: Request):
     auth_repository.delete_session(request.cookies.get(AUTH_COOKIE, ""))
     response = RedirectResponse(url="/login", status_code=303)
-    response.delete_cookie(AUTH_COOKIE)
+    response.delete_cookie(AUTH_COOKIE, secure=settings.COOKIE_SECURE, samesite="lax")
     return response
 
 
 @app.middleware("http")
 async def authentication_middleware(request: Request, call_next):
     path = request.url.path
+    if request.method == "OPTIONS":
+        return await call_next(request)
     if path in PUBLIC_PATHS or any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES):
         return await call_next(request)
-    user = auth_repository.get_user_by_session(request.cookies.get(AUTH_COOKIE, ""))
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, credential = authorization.partition(" ")
+    user = (
+        auth_repository.get_user_by_access_token(credential.strip())
+        if scheme.lower() == "bearer" and credential.strip()
+        else auth_repository.get_user_by_session(request.cookies.get(AUTH_COOKIE, ""))
+    )
     if user:
         request.state.user = user
         if path.startswith("/admin") and user["role"] != "admin":
             return JSONResponse({"detail": "Acesso administrativo restrito."}, status_code=403)
         return await call_next(request)
-    if request.method == "GET":
+    if request.method == "GET" and not path.startswith("/api/"):
         return RedirectResponse(url="/login", status_code=303)
     return JSONResponse({"detail": "Autenticacao necessaria."}, status_code=401)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    )
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if forwarded_proto == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 def current_user(request: Request) -> dict:
@@ -552,7 +650,14 @@ async def login(request: Request):
     if not user:
         return RedirectResponse(url="/login?erro=1", status_code=303)
     response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie(AUTH_COOKIE, auth_repository.create_session(user["id"]), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax")
+    response.set_cookie(
+        AUTH_COOKIE,
+        auth_repository.create_session(user["id"]),
+        max_age=60 * 60 * 24 * 30,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+    )
     return response
 
 
@@ -581,7 +686,7 @@ async def register(request: Request):
 async def logout(request: Request):
     auth_repository.delete_session(request.cookies.get(AUTH_COOKIE, ""))
     response = RedirectResponse(url="/login", status_code=303)
-    response.delete_cookie(AUTH_COOKIE)
+    response.delete_cookie(AUTH_COOKIE, secure=settings.COOKIE_SECURE, samesite="lax")
     return response
 
 
@@ -895,6 +1000,155 @@ class PresentationRequest(BaseModel):
     idioma: LanguageCode = "pt-BR"
 
 
+class MobileLoginRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class MobileRegisterRequest(BaseModel):
+    full_name: str = Field(min_length=3, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class MobileRefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=500)
+
+
+class MobileLogoutRequest(BaseModel):
+    refresh_token: str = Field(default="", max_length=500)
+
+
+class AccountDeletionRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+    confirmation: str = Field(min_length=1, max_length=40)
+
+
+def mobile_user_payload(user: dict) -> dict:
+    return {
+        "id": user["id"],
+        "full_name": user["full_name"],
+        "email": user["email"],
+        "role": user["role"],
+        "subscription": subscription_summary(user),
+    }
+
+
+def bearer_credential(request: Request) -> str:
+    scheme, _, credential = request.headers.get("Authorization", "").partition(" ")
+    return credential.strip() if scheme.lower() == "bearer" else ""
+
+
+@app.post("/api/v1/mobile/auth/login")
+async def mobile_login(payload: MobileLoginRequest):
+    user = await asyncio.to_thread(auth_repository.authenticate, payload.email, payload.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Email ou senha incorretos.")
+    tokens = await asyncio.to_thread(auth_repository.issue_mobile_tokens, user["id"])
+    return {**tokens, "user": mobile_user_payload(dict(user))}
+
+
+@app.post("/api/v1/mobile/auth/register", status_code=201)
+async def mobile_register(payload: MobileRegisterRequest):
+    ok, message = await asyncio.to_thread(
+        auth_repository.create_user,
+        payload.full_name,
+        payload.email,
+        payload.password,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    user = await asyncio.to_thread(auth_repository.authenticate, payload.email, payload.password)
+    tokens = await asyncio.to_thread(auth_repository.issue_mobile_tokens, user["id"])
+    return {**tokens, "user": mobile_user_payload(dict(user))}
+
+
+@app.post("/api/v1/mobile/auth/refresh")
+async def mobile_refresh(payload: MobileRefreshRequest):
+    tokens = await asyncio.to_thread(auth_repository.rotate_mobile_refresh_token, payload.refresh_token)
+    if not tokens:
+        raise HTTPException(status_code=401, detail="Sessao expirada. Entre novamente.")
+    return tokens
+
+
+@app.post("/api/v1/mobile/auth/logout", status_code=204)
+async def mobile_logout(payload: MobileLogoutRequest, request: Request):
+    await asyncio.to_thread(
+        auth_repository.revoke_mobile_tokens,
+        bearer_credential(request),
+        payload.refresh_token,
+    )
+    return Response(status_code=204)
+
+
+@app.get("/api/v1/mobile/me")
+async def mobile_me(request: Request):
+    return {"user": mobile_user_payload(current_user(request))}
+
+
+@app.get("/api/v1/mobile/subscription")
+async def mobile_subscription(request: Request):
+    user = current_user(request)
+    order = await asyncio.to_thread(auth_repository.get_latest_payment_order, user["id"])
+    entitlement = subscription_service.snapshot(user, str(order["provider"] if order else ""))
+    return {
+        "entitlement": entitlement.to_dict(),
+        "store_products_configured": subscription_service.store_products_configured,
+    }
+
+
+@app.delete("/api/v1/mobile/account")
+async def mobile_delete_account(payload: AccountDeletionRequest, request: Request):
+    user = current_user(request)
+    if user["role"] == "admin":
+        raise HTTPException(status_code=409, detail="A conta administrativa deve ser transferida antes da exclusao.")
+    if payload.confirmation.strip().upper() != "EXCLUIR":
+        raise HTTPException(status_code=400, detail="Digite EXCLUIR para confirmar.")
+    ok, message, subscription = await asyncio.to_thread(
+        auth_repository.delete_account,
+        user["id"],
+        payload.password,
+    )
+    if not ok:
+        raise HTTPException(status_code=401, detail=message)
+    return {"message": message, "subscription": subscription}
+
+
+def provisional_page(title: str, body: str) -> HTMLResponse:
+    return HTMLResponse(
+        f"""<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">
+        <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+        <title>{html.escape(title)} - MAGISTERIA</title></head>
+        <body><main><h1>{html.escape(title)}</h1><p><strong>Texto provisÃ³rio sujeito a revisÃ£o jurÃ­dica.</strong></p>
+        <p>{html.escape(body)}</p><p>Contato provisÃ³rio: suporte a definir pelo proprietÃ¡rio.</p></main></body></html>"""
+    )
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+async def privacy_page():
+    return provisional_page("PolÃ­tica de privacidade", "Descreve dados de conta, consultas, documentos e pagamentos tratados para operar o serviÃ§o.")
+
+
+@app.get("/terms", response_class=HTMLResponse, include_in_schema=False)
+async def terms_page():
+    return provisional_page("Termos de uso", "Define provisoriamente as condiÃ§Ãµes de acesso, limites de uso e responsabilidades do serviÃ§o.")
+
+
+@app.get("/support", response_class=HTMLResponse, include_in_schema=False)
+async def support_page():
+    return provisional_page("Suporte", "Canal pÃºblico provisÃ³rio para ajuda com acesso, assinatura, privacidade e exclusÃ£o de conta.")
+
+
+@app.get("/account-deletion", response_class=HTMLResponse, include_in_schema=False)
+async def account_deletion_page():
+    return provisional_page("ExclusÃ£o de conta", "A exclusÃ£o estÃ¡ disponÃ­vel dentro do aplicativo em Perfil e remove a conta apÃ³s reautenticaÃ§Ã£o.")
+
+
+@app.get("/app-version")
+async def public_app_version():
+    return {"version": APP_VERSION, "platforms": ["web", "android", "ios"]}
+
+
 def retrieval_query(payload: QuestionRequest) -> str:
     question = payload.pergunta.strip()
     if payload.historico and len(question.split()) <= 12:
@@ -933,7 +1187,7 @@ def ordered_chunks_with_diagnostics(
                         "query": redact_query(payload.pergunta),
                         "type": diagnostics.get("query", {}).get("query_type"),
                         "candidate_counts": diagnostics.get("candidate_counts", {}),
-                        "selected_chunks": diagnostics.get("selected_chunks", []),
+                        "selected_count": len(diagnostics.get("selected_chunks", [])),
                         "threshold_policy": diagnostics.get("threshold_policy"),
                     },
                     ensure_ascii=False,
@@ -1173,6 +1427,16 @@ async def ask_stream(payload: QuestionRequest, request: Request):
     return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
+@app.post("/api/v1/ask")
+async def mobile_ask(payload: QuestionRequest, request: Request):
+    return await ask(payload, request)
+
+
+@app.post("/api/v1/ask-stream")
+async def mobile_ask_stream(payload: QuestionRequest, request: Request):
+    return await ask_stream(payload, request)
+
+
 @app.post("/indexar")
 async def index_documents(request: Request):
     require_admin(request)
@@ -1253,6 +1517,11 @@ async def health():
 @app.get("/documentos")
 async def documents():
     return {"documentos": public_document_names()}
+
+
+@app.get("/api/v1/documents")
+async def mobile_documents():
+    return {"documents": public_document_names()}
 
 
 @app.get("/admin/estatisticas")
@@ -1359,6 +1628,8 @@ async def upload_document_chunk(request: Request):
     if offset < 0:
         raise HTTPException(status_code=400, detail="Offset invalido.")
     content = await request.body()
+    if len(content) > settings.MAX_UPLOAD_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="Parte do arquivo excede o limite permitido.")
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = "r+b" if target.exists() else "wb"
     with target.open(mode) as output:

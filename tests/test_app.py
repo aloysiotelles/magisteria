@@ -27,6 +27,7 @@ from services.presentation_service import PresentationService, safe_filename
 from services.localization import answer_message
 from services.asaas_service import AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
+from services.subscription_service import SubscriptionService
 
 
 def authenticated_client() -> TestClient:
@@ -1468,3 +1469,95 @@ def test_slide_fallback_does_not_block_the_event_loop(monkeypatch):
         return heartbeat_elapsed
 
     assert asyncio.run(scenario()) < 0.06
+
+
+def test_mobile_tokens_rotate_and_reuse_revokes_the_family(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "mobile-auth.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repository)
+    assert repository.create_user("Usuario Mobile", "mobile@example.com", "SenhaForte1")[0]
+    client = TestClient(application.app)
+
+    login = client.post(
+        "/api/v1/mobile/auth/login",
+        json={"email": "mobile@example.com", "password": "SenhaForte1"},
+    )
+    assert login.status_code == 200
+    initial = login.json()
+    me = client.get(
+        "/api/v1/mobile/me",
+        headers={"Authorization": f"Bearer {initial['access_token']}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["user"]["email"] == "mobile@example.com"
+
+    rotated = client.post(
+        "/api/v1/mobile/auth/refresh",
+        json={"refresh_token": initial["refresh_token"]},
+    )
+    assert rotated.status_code == 200
+    current = rotated.json()
+    reuse = client.post(
+        "/api/v1/mobile/auth/refresh",
+        json={"refresh_token": initial["refresh_token"]},
+    )
+    assert reuse.status_code == 401
+    assert client.get(
+        "/api/v1/mobile/me",
+        headers={"Authorization": f"Bearer {current['access_token']}"},
+    ).status_code == 401
+
+
+def test_mobile_account_deletion_reauthenticates_and_cascades(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "mobile-delete.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repository)
+    assert repository.create_user("Usuario Mobile", "delete@example.com", "SenhaForte1")[0]
+    client = TestClient(application.app)
+    login = client.post(
+        "/api/v1/mobile/auth/login",
+        json={"email": "delete@example.com", "password": "SenhaForte1"},
+    ).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+
+    denied = client.request(
+        "DELETE",
+        "/api/v1/mobile/account",
+        headers=headers,
+        json={"password": "errada", "confirmation": "EXCLUIR"},
+    )
+    assert denied.status_code == 401
+    deleted = client.request(
+        "DELETE",
+        "/api/v1/mobile/account",
+        headers=headers,
+        json={"password": "SenhaForte1", "confirmation": "EXCLUIR"},
+    )
+    assert deleted.status_code == 200
+    assert repository.find_user_by_login("delete@example.com") is None
+    assert client.get("/api/v1/mobile/me", headers=headers).status_code == 401
+    with repository._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM account_deletion_audit").fetchone()[0] == 1
+
+
+def test_security_headers_and_mobile_cors_are_present():
+    client = TestClient(application.app)
+    response = client.get("/health", headers={"Origin": "capacitor://localhost"})
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert response.headers["access-control-allow-origin"] == "capacitor://localhost"
+
+
+def test_subscription_abstraction_normalizes_web_android_ios_and_free():
+    service = SubscriptionService("google.premium", "apple.premium")
+    user = {
+        "role": "user",
+        "account_type": "completa",
+        "subscription_status": "ativa",
+        "subscription_renews_at": "2026-08-01",
+    }
+    assert service.snapshot(user, "asaas").source == "web"
+    assert service.snapshot(user, "google_play").product_id == "google.premium"
+    assert service.snapshot(user, "apple").source == "ios"
+    free = {**user, "account_type": "gratuita", "subscription_status": "inativa"}
+    assert service.snapshot(free).source == "free"
+    assert service.snapshot(free).is_full_access is False
