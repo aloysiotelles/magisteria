@@ -478,7 +478,8 @@ def test_catechesis_prompt_goes_directly_to_topic_and_adapts_examples_to_audienc
     )
     instructions = request["instructions"]
 
-    assert "não defina, explique nem introduza o que é uma catequese" in instructions
+    assert "a palavra catequese indica apenas o formato pedido pelo usuário" in instructions
+    assert "Se a resposta fizer isso, marque action='rewrite'" in instructions
     assert "exemplos concretos adequados ao público declarado" in instructions
     assert service._is_catechesis_request("Prepare uma catequese sobre o perdão para adolescentes.")
     assert service._is_catechesis_request("Elabore uma catequese sobre a Eucaristia.")
