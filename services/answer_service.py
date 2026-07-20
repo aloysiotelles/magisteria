@@ -251,6 +251,20 @@ class AnswerService:
             )
         )
 
+    @staticmethod
+    def _is_catechesis_request(question: str) -> bool:
+        """Detecta pedidos de produção de uma catequese, sem depender de acentos."""
+        normalized = re.sub(r"\s+", " ", question.casefold()).strip()
+        normalized = normalized.translate(str.maketrans(
+            "áàãâäéèêëíìîïóòõôöúùûüç",
+            "aaaaaeeeeiiiiooooouuuuc",
+        ))
+        return bool(re.search(
+            r"\b(?:prepare|redija|elabore|monte|produza|crie|faca|facam|escreva|preciso de)\b"
+            r"[^.!?\n]{0,80}\buma?\s+catequese\b",
+            normalized,
+        )) or bool(re.search(r"\b(?:prepare|redija|elabore|monte|produza|crie|escreva)\b[^.!?\n]{0,80}\bcatequese\b", normalized))
+
     async def _grounded_rewrite(
         self,
         question: str,
@@ -350,6 +364,14 @@ class AnswerService:
             f"[AMOSTRA DE ESTILO {number} - {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
             for number, chunk in enumerate(style_chunks or [], start=1)
         ) or "Sem amostras especificas de homilias para esta pergunta."
+        catechesis_instruction = ""
+        if self._is_catechesis_request(question):
+            catechesis_instruction = (
+                "Este é um pedido para redigir uma catequese. Vá diretamente ao tema solicitado: não defina, "
+                "explique nem introduza o que é uma catequese, a menos que isso seja explicitamente pedido. "
+                "Estruture o conteúdo de modo prático e didático, com exemplos concretos adequados ao público "
+                "declarado na pergunta; se não houver público declarado, use linguagem acessível para a comunidade. "
+            )
         thematic_instruction = ""
         if analysis.query_type in {QueryType.TERM, QueryType.PHRASE}:
             thematic_instruction = (
@@ -370,6 +392,7 @@ class AnswerService:
                 "Use as AMOSTRAS DE ESTILO DAS HOMILIAS apenas para calibrar ritmo e cadência; não retire delas "
                 "afirmações factuais para responder se elas não estiverem também apoiadas nos TRECHOS CADASTRADOS. "
                 "Comece diretamente pela resposta. Explique termos religiosos com simplicidade quando necessário. "
+                f"{catechesis_instruction}"
                 "Quando a pergunta pedir o significado ou a definição de um termo e os trechos trouxerem uma seção, "
                 "um título ou uma frase que o defina explicitamente, responda a partir dessa definição; nesse caso, "
                 "é incorreto alegar que a informação não foi encontrada. "

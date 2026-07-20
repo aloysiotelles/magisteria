@@ -467,6 +467,24 @@ def test_answer_prompt_requires_consolidated_text():
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in request["input"]
 
 
+def test_catechesis_prompt_goes_directly_to_topic_and_adapts_examples_to_audience():
+    service = AnswerService("chave", "modelo")
+    chunks = [{"source": "Catecismo.txt", "location": "página 1", "text": "Trecho", "score": 1.0}]
+
+    request = service._request_arguments(
+        "Redija uma catequese sobre a esperança cristã para crianças de 8 anos, com exemplos didáticos.",
+        chunks,
+        [],
+    )
+    instructions = request["instructions"]
+
+    assert "não defina, explique nem introduza o que é uma catequese" in instructions
+    assert "exemplos concretos adequados ao público declarado" in instructions
+    assert service._is_catechesis_request("Prepare uma catequese sobre o perdão para adolescentes.")
+    assert service._is_catechesis_request("Elabore uma catequese sobre a Eucaristia.")
+    assert not service._is_catechesis_request("O que é uma catequese?")
+
+
 def test_homily_corpus_profile_and_presentation_standard():
     instructions = PresentationService._plan_instructions()
 
