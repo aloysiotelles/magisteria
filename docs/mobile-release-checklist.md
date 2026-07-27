@@ -52,6 +52,7 @@
 
 ## Lojas
 
+- [x] Registro Android criado no Play Console com `br.com.aloysiotelles.magisteria`.
 - [ ] Ícone, screenshots, descrições, categoria e classificação.
 - [ ] Support URL, Privacy URL e Account Deletion URL.
 - [ ] Play testing requirement concluído, se aplicável.

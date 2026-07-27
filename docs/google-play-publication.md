@@ -1,5 +1,16 @@
 # Publicação Google Play
 
+## Registro criado no Play Console
+
+- Criado em 27/07/2026 na conta pessoal de Aloysio Telles de Moraes Netto.
+- Nome: `MAGISTERIA`.
+- Application ID: `br.com.aloysiotelles.magisteria`.
+- ID interno do Play Console: `4975624098480909728`.
+- Idioma padrão: português do Brasil.
+- Tipo e preço inicial: aplicativo gratuito.
+- Produção bloqueada até concluir a configuração, publicar um teste fechado e manter pelo menos 12 participantes por 14 dias.
+- Estado inicial: 0 de 11 tarefas de conteúdo e página da loja concluídas.
+
 ## Requisitos técnicos atuais
 
 - Aplicativo Android Capacitor 8, `minSdk 24`, `compileSdk 36`, `targetSdk 36`.
