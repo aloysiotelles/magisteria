@@ -9,14 +9,16 @@
 - Idioma padrão: português do Brasil.
 - Tipo e preço inicial: aplicativo gratuito.
 - Produção bloqueada até concluir a configuração, publicar um teste fechado e manter pelo menos 12 participantes por 14 dias.
-- Estado inicial: 0 de 11 tarefas de conteúdo e página da loja concluídas.
+- Estado em 27/07/2026: 5 de 11 tarefas de conteúdo concluídas. Foram salvas a política de privacidade e as declarações de anúncios, app governamental, recursos financeiros e saúde. Categoria `Educação`, e-mail e site de suporte também foram cadastrados.
 
 ## Decisões e bloqueios registrados em 27/07/2026
 
 - O proprietário declarou que o aplicativo não é infantil. Antes de enviar o formulário de público-alvo, confirmar se a seleção será exclusivamente 18 anos ou mais; essa é a recomendação técnica atual.
 - Antes do primeiro AAB assinado, explicar ao proprietário a função da upload key, gerar a chave fora do Git e criar uma cópia de recuperação segura. Não gerar nem enviar a chave sem essa explicação.
-- Push/PR aguardam instalação e autenticação do GitHub CLI (`gh`) neste Windows.
-- O deploy Railway está preparado por `Dockerfile`, `railway.toml` e `/health`, mas ainda não foi executado.
+- A implementação móvel e a preparação de publicação foram integradas à `main` pelos PRs [#1](https://github.com/aloysiotelles/magisteria/pull/1) e [#2](https://github.com/aloysiotelles/magisteria/pull/2), com CI verde.
+- O Railway publicou a versão `0.8.0`. `/health`, `/privacy`, `/terms`, `/support`, `/account-deletion` e `/app-version` foram validados publicamente em 27/07/2026.
+- Ícone 512 × 512, feature graphic 1024 × 500 e textos pt-BR estão em `store-assets/android/`.
+- O workflow manual protegido `Android signed release` está preparado. A upload key ainda não foi gerada e nenhum segredo foi adicionado ao GitHub.
 
 ## Requisitos técnicos atuais
 
@@ -51,7 +53,7 @@ O AAB assinado será produzido em `android/app/build/outputs/bundle/release/`. N
 - Identificador definitivo confirmado no Capacitor/Gradle: `br.com.aloysiotelles.magisteria`.
 - Publicador: Aloysio Telles de Moraes Netto (conta pessoal).
 - E-mail público de suporte: `aplicativo.magisteria@gmail.com`.
-- URLs públicas: `https://magisteria-production.up.railway.app/privacy`, `/support` e `/account-deletion`; validar conteúdo público após o deploy da versão móvel.
+- URLs públicas validadas: `https://magisteria-production.up.railway.app/privacy`, `/terms`, `/support` e `/account-deletion`.
 - Confirmar `versionName=0.8.0` e incrementar `versionCode` acima de 800 a cada upload.
 - Criar upload key offline e ativar Play App Signing.
 - Configurar secrets somente no GitHub Environment protegido se build assinado for automatizado.
