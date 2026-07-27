@@ -276,7 +276,8 @@ class AnswerService:
             "sobre o que é catequese, educação da fé, iniciação cristã ou elementos da catequese, salvo se o usuário "
             "pedir isso expressamente. Não use trechos recuperados que definam catequese para desviar do tema. "
             "Se a resposta fizer isso, marque action='rewrite' e reescreva removendo esse conteúdo. "
-            "Redija o conteúdo como uma catequese pronta, com exemplos didáticos adequados ao público declarado. "
+            "Redija o conteúdo como uma catequese pronta, com exemplos concretos adequados ao público declarado "
+            "e linguagem didática. "
         )
 
     async def _grounded_rewrite(
