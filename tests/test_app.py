@@ -1580,3 +1580,23 @@ def test_subscription_abstraction_normalizes_web_android_ios_and_free():
     free = {**user, "account_type": "gratuita", "subscription_status": "inativa"}
     assert service.snapshot(free).source == "free"
     assert service.snapshot(free).is_full_access is False
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/privacy", "Política de privacidade"),
+        ("/terms", "Termos de uso"),
+        ("/support", "Como pedir ajuda"),
+        ("/account-deletion", "EXCLUIR"),
+    ],
+)
+def test_public_store_information_pages_are_complete(path: str, expected: str):
+    response = TestClient(application.app).get(path)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert expected in response.text
+    assert "Aloysio Telles de Moraes Netto" in response.text
+    assert "aplicativo.magisteria@gmail.com" in response.text
+    assert "Texto provisório" not in response.text

@@ -1114,34 +1114,98 @@ async def mobile_delete_account(payload: AccountDeletionRequest, request: Reques
     return {"message": message, "subscription": subscription}
 
 
-def provisional_page(title: str, body: str) -> HTMLResponse:
+PUBLIC_CONTROLLER = "Aloysio Telles de Moraes Netto"
+PUBLIC_SUPPORT_EMAIL = "aplicativo.magisteria@gmail.com"
+
+
+def public_information_page(
+    title: str,
+    intro: str,
+    sections: list[tuple[str, str]],
+) -> HTMLResponse:
+    section_html = "".join(
+        f"<section><h2>{html.escape(heading)}</h2><p>{html.escape(content)}</p></section>"
+        for heading, content in sections
+    )
+    email = html.escape(PUBLIC_SUPPORT_EMAIL)
     return HTMLResponse(
-        f"""<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">
-        <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
-        <title>{html.escape(title)} - MAGISTERIA</title></head>
-        <body><main><h1>{html.escape(title)}</h1><p><strong>Texto provisÃ³rio sujeito a revisÃ£o jurÃ­dica.</strong></p>
-        <p>{html.escape(body)}</p><p>Contato provisÃ³rio: suporte a definir pelo proprietÃ¡rio.</p></main></body></html>"""
+        f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <meta name="color-scheme" content="light">
+        <title>{html.escape(title)} - MAGISTERIA</title>
+        <link rel="stylesheet" href="/static/legal.css"></head><body><main>
+        <h1>{html.escape(title)}</h1><p class="meta">MAGISTERIA · última atualização: 27 de julho de 2026</p>
+        <p>{html.escape(intro)}</p>{section_html}
+        <section><h2>Controlador e contato</h2><p>Responsável: {html.escape(PUBLIC_CONTROLLER)}.<br>
+        E-mail: <a href="mailto:{email}">{email}</a>. Nunca envie sua senha por e-mail.</p></section>
+        <nav aria-label="Informações legais"><a href="/privacy">Privacidade</a><a href="/terms">Termos</a>
+        <a href="/support">Suporte</a><a href="/account-deletion">Exclusão de conta</a></nav>
+        </main></body></html>"""
     )
 
 
 @app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
 async def privacy_page():
-    return provisional_page("PolÃ­tica de privacidade", "Descreve dados de conta, consultas, documentos e pagamentos tratados para operar o serviÃ§o.")
+    return public_information_page(
+        "Política de privacidade",
+        "Esta política explica como o MAGISTERIA trata dados pessoais ao oferecer seus serviços web e Android.",
+        [
+            ("Dados tratados", "Dados de cadastro e autenticação, como nome, e-mail e hash da senha; perguntas e conteúdos enviados para gerar respostas; dados de uso, franquias, sessões e diagnósticos técnicos limitados; e informações de assinatura ou pagamento quando esse recurso for utilizado."),
+            ("Finalidades", "Os dados são usados para criar e proteger a conta, fornecer respostas e arquivos solicitados, aplicar limites de uso, prestar suporte, prevenir abuso, manter o serviço e cumprir obrigações legais."),
+            ("Operadores e compartilhamento", "Dados necessários podem ser processados por provedores de hospedagem, inteligência artificial, e-mail, pagamento e distribuição do aplicativo. Não vendemos dados pessoais. Cada provedor recebe somente o necessário para sua função e está sujeito às respectivas políticas e contratos."),
+            ("Retenção", "Dados da conta são mantidos enquanto ela estiver ativa. Sessões e tokens expiram ou são revogados. Diagnósticos técnicos tipados têm retenção padrão de 14 dias. Registros mínimos podem ser preservados quando necessários para segurança, prevenção a fraude ou obrigação legal."),
+            ("Segurança", "Usamos HTTPS, senhas derivadas por hash, tokens móveis rotativos armazenados de forma segura, controles de acesso e limitação de requisições. Nenhum sistema é totalmente imune a incidentes, mas adotamos medidas proporcionais aos riscos."),
+            ("Seus direitos", "Você pode solicitar acesso, correção, informação, oposição ou exclusão de dados pelos canais desta página, conforme a legislação aplicável. A exclusão também pode ser iniciada no aplicativo."),
+            ("Crianças e adolescentes", "O serviço não deve ser usado para criar uma conta por pessoa sem capacidade legal ou autorização de seu responsável. Responsáveis podem contatar o suporte para exercer direitos sobre dados."),
+            ("Alterações", "Esta política pode ser atualizada para refletir mudanças no serviço ou na legislação. A data da versão vigente é exibida no início da página."),
+        ],
+    )
 
 
 @app.get("/terms", response_class=HTMLResponse, include_in_schema=False)
 async def terms_page():
-    return provisional_page("Termos de uso", "Define provisoriamente as condiÃ§Ãµes de acesso, limites de uso e responsabilidades do serviÃ§o.")
+    return public_information_page(
+        "Termos de uso",
+        "Ao criar uma conta ou utilizar o MAGISTERIA, você concorda com estes termos.",
+        [
+            ("Serviço", "O MAGISTERIA oferece pesquisa e geração assistida por inteligência artificial para estudo e preparação de conteúdos. Recursos, limites e disponibilidade podem variar por plano e versão."),
+            ("Conta", "Você deve fornecer dados verdadeiros, manter sua senha em sigilo e comunicar acessos indevidos. A conta é pessoal e não deve ser cedida."),
+            ("Uso responsável", "É proibido usar o serviço para violar leis, direitos de terceiros, controles de segurança, limites técnicos ou para distribuir conteúdo malicioso. Abusos podem levar à suspensão."),
+            ("Conteúdo gerado", "Respostas de inteligência artificial podem conter imprecisões. O usuário deve revisar fontes e resultados antes de uso pastoral, acadêmico, profissional ou público. O serviço não substitui orientação especializada."),
+            ("Planos e pagamentos", "Eventuais preços, renovações, cancelamentos e reembolsos são apresentados no canal de contratação aplicável. Compras digitais no Android somente serão oferecidas por mecanismos permitidos pelo Google Play."),
+            ("Disponibilidade", "Podem ocorrer manutenções, indisponibilidades de rede e mudanças em integrações de terceiros. Buscamos continuidade, mas não garantimos operação ininterrupta."),
+            ("Privacidade e encerramento", "O tratamento de dados segue a Política de privacidade. Você pode encerrar a conta pelo aplicativo ou pelo canal de exclusão publicado."),
+            ("Alterações", "Os termos podem ser atualizados quando o serviço mudar. O uso posterior à comunicação de mudanças relevantes representa aceitação da versão vigente, quando permitido por lei."),
+        ],
+    )
 
 
 @app.get("/support", response_class=HTMLResponse, include_in_schema=False)
 async def support_page():
-    return provisional_page("Suporte", "Canal pÃºblico provisÃ³rio para ajuda com acesso, assinatura, privacidade e exclusÃ£o de conta.")
+    return public_information_page(
+        "Suporte",
+        "Para ajuda com cadastro, acesso, funcionamento, privacidade, assinatura ou exclusão, envie uma mensagem para aplicativo.magisteria@gmail.com.",
+        [
+            ("Como pedir ajuda", "Informe o e-mail da conta, a plataforma Android, uma descrição objetiva do problema e, se possível, a versão do aplicativo. Não envie senha, código de recuperação, token ou dados bancários."),
+            ("Acesso e segurança", "Se suspeitar de acesso indevido, altere a senha assim que possível e descreva o ocorrido ao suporte."),
+            ("Privacidade", "Solicitações relacionadas a dados pessoais podem ser feitas pelo mesmo e-mail e serão atendidas após validação razoável de identidade."),
+        ],
+    )
 
 
 @app.get("/account-deletion", response_class=HTMLResponse, include_in_schema=False)
 async def account_deletion_page():
-    return provisional_page("ExclusÃ£o de conta", "A exclusÃ£o estÃ¡ disponÃ­vel dentro do aplicativo em Perfil e remove a conta apÃ³s reautenticaÃ§Ã£o.")
+    return public_information_page(
+        "Exclusão de conta",
+        "Usuários do MAGISTERIA podem solicitar a exclusão da conta e dos dados associados pelo aplicativo ou por e-mail.",
+        [
+            ("No aplicativo", "Abra Perfil, selecione Excluir conta, confirme sua senha e digite EXCLUIR. A conta é removida após a reautenticação e você retorna à tela de entrada."),
+            ("Sem acesso ao aplicativo", "Envie um e-mail de aplicativo.magisteria@gmail.com com o assunto Solicitação de exclusão de conta MAGISTERIA e informe o e-mail cadastrado. Não envie sua senha. Poderemos solicitar uma confirmação razoável de identidade."),
+            ("Dados excluídos", "São eliminados o cadastro, sessões, tokens móveis, franquias e demais registros diretamente vinculados à conta, salvo informações cuja retenção seja necessária por segurança, prevenção a fraude ou obrigação legal."),
+            ("Assinaturas", "Se existir assinatura ativa contratada por outro canal, solicite também o cancelamento nesse canal antes de excluir a conta. A exclusão da conta não substitui automaticamente o cancelamento externo enquanto não houver integração de cobrança ativa no Android."),
+            ("Prazo", "A exclusão confirmada dentro do aplicativo é processada imediatamente. Pedidos por e-mail são processados após validação de identidade e dentro dos prazos legais aplicáveis."),
+        ],
+    )
 
 
 @app.get("/app-version")
