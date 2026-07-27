@@ -1,4 +1,4 @@
-package br.com.seudominio.magisteria;
+package br.com.aloysiotelles.magisteria;
 
 import com.getcapacitor.BridgeActivity;
 

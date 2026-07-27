@@ -30,7 +30,10 @@ O AAB assinado será produzido em `android/app/build/outputs/bundle/release/`. N
 
 ## Antes de assinar
 
-- Substituir `br.com.seudominio.magisteria` no Capacitor/Gradle.
+- Identificador definitivo confirmado no Capacitor/Gradle: `br.com.aloysiotelles.magisteria`.
+- Publicador: Aloysio Telles de Moraes Netto (conta pessoal).
+- E-mail público de suporte: `aplicativo.magisteria@gmail.com`.
+- URLs públicas: `https://magisteria-production.up.railway.app/privacy`, `/support` e `/account-deletion`; validar conteúdo público após o deploy da versão móvel.
 - Confirmar `versionName=0.8.0` e incrementar `versionCode` acima de 800 a cada upload.
 - Criar upload key offline e ativar Play App Signing.
 - Configurar secrets somente no GitHub Environment protegido se build assinado for automatizado.

@@ -131,7 +131,7 @@ iOS requer um Mac com Xcode 26 ou mais recente:
 pnpm mobile:ios
 ```
 
-O identificador `br.com.seudominio.magisteria` é provisório. Confirme o identificador definitivo antes de criar os registros nas lojas. Não use `server.url` para produção e nunca coloque segredos em variáveis `VITE_*`.
+O identificador Android definitivo é `br.com.aloysiotelles.magisteria`. A API pública usada pelo aplicativo é `https://magisteria-production.up.railway.app`; não use `server.url` para produção e nunca coloque segredos em variáveis `VITE_*`.
 
 Documentação detalhada:
 

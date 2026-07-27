@@ -2,8 +2,9 @@
 
 ## Identidade e versão
 
-- [ ] Proprietário confirmou app name, bundle/application ID e titular legal.
-- [ ] Placeholder `br.com.seudominio.magisteria` removido de Capacitor, Android e Xcode.
+- [x] Proprietário confirmou `MAGISTERIA`, publicador Aloysio Telles de Moraes Netto e application ID Android.
+- [x] Placeholder removido do Capacitor e Android: `br.com.aloysiotelles.magisteria`.
+- [ ] Bundle ID do Xcode permanece adiado; a primeira publicação será somente Android.
 - [ ] `package.json`, `APP_VERSION`, Android `versionName` e iOS marketing version representam a mesma versão pública.
 - [ ] Android `versionCode` e iOS `CFBundleVersion` foram incrementados.
 - [ ] `CHANGELOG.md` atualizado.

@@ -1,7 +1,6 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
-// Placeholder until the owner confirms the final reverse-domain identifier.
-const appId = process.env.CAPACITOR_APP_ID?.trim() || 'br.com.seudominio.magisteria';
+const appId = process.env.CAPACITOR_APP_ID?.trim() || 'br.com.aloysiotelles.magisteria';
 
 const config: CapacitorConfig = {
   appId,

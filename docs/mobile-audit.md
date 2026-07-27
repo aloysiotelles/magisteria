@@ -57,7 +57,7 @@ O frontend móvel usa safe areas, alvos mínimos de 44 px, layouts de 280 px em 
 3. Tokens opacos curtos e refresh rotativo, armazenados em Keychain/Keystore.
 4. Mesma API, usuários, banco, documentos e regras do Railway.
 5. Asaas somente web; Play Billing/StoreKit ficam preparados, não ativados.
-6. `br.com.seudominio.magisteria` é placeholder e deve ser trocado antes de criar apps nas lojas.
+6. O placeholder Android foi resolvido com `br.com.aloysiotelles.magisteria`; a identidade iOS permanece adiada porque a primeira publicação será somente no Google Play.
 
 ## Impacto esperado
 
