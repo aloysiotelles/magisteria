@@ -215,6 +215,7 @@ class AnswerService:
             f" Qualquer suggested_answer deve obedecer a esta regra: {answer_language_instruction(selected_language)}"
             f" Verifique também a forma segundo esta regra, sem bloquear uma resposta factual apenas por estilo: "
             f"{localized_writing_standard(JOHN_PAUL_II_WRITING_STANDARD, selected_language)}"
+            f" {self._catechesis_instruction(question)}"
         )
         response = await self.client.responses.create(
             model=self.review_model,
@@ -251,6 +252,34 @@ class AnswerService:
             )
         )
 
+    @staticmethod
+    def _is_catechesis_request(question: str) -> bool:
+        """Detecta pedidos de produção de uma catequese, sem depender de acentos."""
+        normalized = re.sub(r"\s+", " ", question.casefold()).strip()
+        normalized = normalized.translate(str.maketrans(
+            "áàãâäéèêëíìîïóòõôöúùûüç",
+            "aaaaaeeeeiiiiooooouuuuc",
+        ))
+        return bool(re.search(
+            r"\b(?:prepare|redija|elabore|monte|produza|crie|faca|facam|escreva|preciso de)\b"
+            r"[^.!?\n]{0,80}\buma?\s+catequese\b",
+            normalized,
+        )) or bool(re.search(r"\b(?:prepare|redija|elabore|monte|produza|crie|escreva)\b[^.!?\n]{0,80}\bcatequese\b", normalized))
+
+    @classmethod
+    def _catechesis_instruction(cls, question: str) -> str:
+        if not cls._is_catechesis_request(question):
+            return ""
+        return (
+            "ATENÇÃO: a palavra catequese indica apenas o formato pedido pelo usuário; ela não é o tema da resposta. "
+            "Comece diretamente pelo tema solicitado. É proibido definir, explicar, introduzir ou fazer um histórico "
+            "sobre o que é catequese, educação da fé, iniciação cristã ou elementos da catequese, salvo se o usuário "
+            "pedir isso expressamente. Não use trechos recuperados que definam catequese para desviar do tema. "
+            "Se a resposta fizer isso, marque action='rewrite' e reescreva removendo esse conteúdo. "
+            "Redija o conteúdo como uma catequese pronta, com exemplos concretos adequados ao público declarado "
+            "e linguagem didática. "
+        )
+
     async def _grounded_rewrite(
         self,
         question: str,
@@ -272,6 +301,7 @@ class AnswerService:
                 "Não use conhecimento externo. Como existem trechos recuperados, não diga que nenhum documento "
                 "foi encontrado. Se o tema for amplo, produza uma visão geral apenas dos aspectos comprovados. "
                 "Entregue somente a resposta reescrita, sem comentários sobre a revisão. "
+                f"{self._catechesis_instruction(question)}"
                 f"{answer_language_instruction(language)}"
             ),
             input=(
@@ -350,6 +380,7 @@ class AnswerService:
             f"[AMOSTRA DE ESTILO {number} - {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
             for number, chunk in enumerate(style_chunks or [], start=1)
         ) or "Sem amostras especificas de homilias para esta pergunta."
+        catechesis_instruction = self._catechesis_instruction(question)
         thematic_instruction = ""
         if analysis.query_type in {QueryType.TERM, QueryType.PHRASE}:
             thematic_instruction = (
@@ -370,6 +401,7 @@ class AnswerService:
                 "Use as AMOSTRAS DE ESTILO DAS HOMILIAS apenas para calibrar ritmo e cadência; não retire delas "
                 "afirmações factuais para responder se elas não estiverem também apoiadas nos TRECHOS CADASTRADOS. "
                 "Comece diretamente pela resposta. Explique termos religiosos com simplicidade quando necessário. "
+                f"{catechesis_instruction}"
                 "Quando a pergunta pedir o significado ou a definição de um termo e os trechos trouxerem uma seção, "
                 "um título ou uma frase que o defina explicitamente, responda a partir dessa definição; nesse caso, "
                 "é incorreto alegar que a informação não foi encontrada. "

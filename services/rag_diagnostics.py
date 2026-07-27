@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -24,10 +24,21 @@ def redact_query(text: str) -> str:
     return redacted[:500]
 
 
+def numeric_metrics(value: object) -> dict[str, int | float | bool | None]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key)[:80]: item
+        for key, item in value.items()
+        if isinstance(item, (int, float, bool)) or item is None
+    }
+
+
 class RAGDiagnosticsRepository:
-    def __init__(self, database_file: Path, debug: bool = False):
+    def __init__(self, database_file: Path, debug: bool = False, retention_days: int = 14):
         self.database_file = database_file
         self.debug = debug
+        self.retention_days = min(max(int(retention_days), 1), 90)
         self.database_file.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -63,6 +74,20 @@ class RAGDiagnosticsRepository:
                 )
                 """
             )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rag_diagnostics_created_at ON rag_diagnostics(created_at)"
+            )
+            # Remove legacy free-form diagnostic text during the schema migration.
+            db.execute(
+                """UPDATE rag_diagnostics
+                   SET query_text = '', normalized_query = '', documents_json = '[]', filters_json = '[]',
+                       validator_json = '{}', final_reason = '', error = NULL, trace_json = '{}'"""
+            )
+            self._purge_expired(db)
+
+    def _purge_expired(self, db: sqlite3.Connection) -> None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.retention_days)).isoformat()
+        db.execute("DELETE FROM rag_diagnostics WHERE created_at < ?", (cutoff,))
 
     def record(
         self,
@@ -80,19 +105,15 @@ class RAGDiagnosticsRepository:
         query_data = diagnostics.get("query", {})
         reranking = diagnostics.get("reranking", [])
         selected = diagnostics.get("selected_chunks", [])
-        documents = list(dict.fromkeys(item.get("source", "") for item in selected if item.get("source")))
         best_score = max((float(item.get("score", 0)) for item in reranking), default=None)
-        if self.debug:
-            trace = json.loads(json.dumps(diagnostics, ensure_ascii=False, default=str))
-            if isinstance(trace.get("query"), dict):
-                trace["query"]["original"] = redact_query(str(trace["query"].get("original", "")))
-        else:
-            trace = {
-                "candidate_counts": diagnostics.get("candidate_counts", {}),
-                "threshold_policy": diagnostics.get("threshold_policy"),
-                "embedding": diagnostics.get("embedding", {}),
-            }
+        trace = {
+            "candidate_counts": numeric_metrics(diagnostics.get("candidate_counts")),
+            "threshold_policy": numeric_metrics(diagnostics.get("threshold_policy")),
+            "embedding": numeric_metrics(diagnostics.get("embedding")),
+        }
+        validator_decision = str((validator or {}).get("decision", ""))[:80]
         with self._connect() as db:
+            self._purge_expired(db)
             db.execute(
                 """
                 INSERT OR REPLACE INTO rag_diagnostics(
@@ -104,21 +125,21 @@ class RAGDiagnosticsRepository:
                 (
                     request_id,
                     datetime.now(timezone.utc).isoformat(),
-                    redact_query(query),
-                    str(query_data.get("normalized", ""))[:500],
+                    "",
+                    "",
                     str(query_data.get("query_type", "")),
                     max(int(duration_ms), 0),
                     status,
                     int(diagnostics.get("candidates_fused", 0)),
                     int(diagnostics.get("final_count", len(selected))),
                     best_score,
-                    json.dumps(documents, ensure_ascii=False),
-                    json.dumps(diagnostics.get("metadata_filters", []), ensure_ascii=False),
-                    json.dumps(validator or {}, ensure_ascii=False),
-                    final_reason[:1000],
+                    "[]",
+                    "[]",
+                    json.dumps({"decision": validator_decision}, ensure_ascii=False),
+                    "",
                     max(int(context_tokens), 0),
                     estimated_cost,
-                    (error or "")[:2000] or None,
+                    ("recorded" if error else None),
                     json.dumps(trace, ensure_ascii=False),
                 ),
             )
@@ -126,6 +147,7 @@ class RAGDiagnosticsRepository:
     def recent(self, limit: int = 100) -> list[dict]:
         limit = min(max(int(limit), 1), 500)
         with self._connect() as db:
+            self._purge_expired(db)
             rows = db.execute(
                 "SELECT * FROM rag_diagnostics ORDER BY created_at DESC LIMIT ?",
                 (limit,),

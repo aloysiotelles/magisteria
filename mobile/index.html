@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#173f2a" />
+    <meta name="color-scheme" content="light" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://magisteria-production.up.railway.app http://127.0.0.1:8000; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'none'" />
+    <title>MAGISTERIA</title>
+  </head>
+  <body>
+    <div id="offline-banner" class="status-banner offline" role="status" hidden>
+      Sem conexão. Suas informações estão preservadas; tente novamente quando a internet voltar.
+    </div>
+    <div id="server-banner" class="status-banner server" role="alert" hidden>
+      <span>Não foi possível alcançar o MAGISTERIA agora.</span>
+      <button id="retry-button" type="button">Tentar novamente</button>
+    </div>
+
+    <main id="app" class="app-shell">
+      <section id="splash-view" class="center-view" aria-live="polite">
+        <img src="/logo-magisteria.png" class="brand-logo" alt="" />
+        <h1>MAGISTERIA</h1>
+        <div class="spinner" aria-label="Carregando"></div>
+      </section>
+
+      <section id="auth-view" class="auth-view" hidden>
+        <div class="brand-block">
+          <img src="/logo-magisteria.png" class="brand-logo" alt="Logo MAGISTERIA" />
+          <p class="eyebrow">Pesquisa pastoral confiável</p>
+          <h1>Gaste tempo evangelizando,<br /><span>não pesquisando.</span></h1>
+        </div>
+        <form id="auth-form" class="panel" novalidate>
+          <h2 id="auth-title">Entrar</h2>
+          <div id="name-field" hidden>
+            <label for="full-name">Nome completo</label>
+            <input id="full-name" name="full-name" autocomplete="name" maxlength="200" />
+          </div>
+          <label for="email">E-mail</label>
+          <input id="email" name="email" type="email" autocomplete="email" required maxlength="320" />
+          <label for="password">Senha</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="200" />
+          <p id="auth-error" class="form-error" role="alert" hidden></p>
+          <button id="auth-submit" class="primary-button" type="submit">Entrar</button>
+          <button id="auth-toggle" class="text-button" type="button">Criar uma conta</button>
+        </form>
+      </section>
+
+      <section id="main-view" hidden>
+        <header class="app-header">
+          <div>
+            <p class="eyebrow">MAGISTERIA</p>
+            <h1 id="welcome-title">Olá</h1>
+          </div>
+          <button id="profile-button" class="icon-button" type="button" aria-label="Abrir perfil">Perfil</button>
+        </header>
+
+        <section class="hero-card">
+          <p class="eyebrow">Base documental compartilhada</p>
+          <h2>O que você deseja aprofundar hoje?</h2>
+          <form id="question-form">
+            <label class="sr-only" for="question">Pergunta</label>
+            <textarea id="question" rows="4" minlength="1" maxlength="2000" placeholder="Ex.: Como explicar a esperança cristã em uma catequese?" required></textarea>
+            <button id="ask-button" class="primary-button" type="submit">Pesquisar e responder</button>
+          </form>
+        </section>
+
+        <section id="answer-loading" class="panel loading-panel" hidden aria-live="polite">
+          <div class="spinner"></div>
+          <div><strong>Consultando a base documental</strong><p>A resposta da IA pode levar alguns instantes.</p></div>
+        </section>
+
+        <article id="answer-card" class="panel answer-card" hidden aria-live="polite">
+          <p class="eyebrow">Resposta fundamentada</p>
+          <h2 id="answer-title">Síntese</h2>
+          <div id="answer-text" class="answer-text"></div>
+          <div id="source-section" hidden>
+            <h3>Fontes consultadas</h3>
+            <ul id="source-list"></ul>
+          </div>
+          <div class="action-grid">
+            <button id="share-answer" type="button">Compartilhar</button>
+            <button id="create-script" type="button">Criar roteiro</button>
+            <button id="create-slides" type="button">Criar slides</button>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <dialog id="profile-dialog">
+      <div class="dialog-header"><h2>Conta e privacidade</h2><button id="close-profile" type="button" aria-label="Fechar">×</button></div>
+      <p id="profile-summary"></p>
+      <nav class="profile-links" aria-label="Informações legais">
+        <button data-external="/privacy" type="button">Política de privacidade</button>
+        <button data-external="/terms" type="button">Termos de uso</button>
+        <button data-external="/support" type="button">Suporte</button>
+      </nav>
+      <button id="logout-button" class="secondary-button" type="button">Sair deste dispositivo</button>
+      <section id="admin-upload" hidden>
+        <h3>Adicionar documento à base</h3>
+        <p>PDF, DOCX, TXT ou Markdown. O envio ocorre em partes e a indexação permanece uma ação administrativa separada.</p>
+        <input id="document-file" type="file" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" />
+        <button id="upload-document" class="secondary-button" type="button">Enviar documento</button>
+        <progress id="upload-progress" value="0" max="100" hidden></progress>
+      </section>
+      <details class="danger-zone">
+        <summary>Excluir minha conta</summary>
+        <p>A exclusão é permanente. Assinaturas da loja devem ser canceladas também na própria loja.</p>
+        <label for="delete-password">Confirme sua senha</label>
+        <input id="delete-password" type="password" autocomplete="current-password" />
+        <label for="delete-confirmation">Digite EXCLUIR</label>
+        <input id="delete-confirmation" autocomplete="off" />
+        <button id="delete-account" class="danger-button" type="button">Excluir conta permanentemente</button>
+      </details>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

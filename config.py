@@ -24,9 +24,14 @@ def _public_url() -> str:
     return f"https://{railway_domain}" if railway_domain else ""
 
 
+def _csv_env(name: str, default: str = "") -> list[str]:
+    return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+
+
 class Settings:
     APP_NAME = "MAGISTERIA"
     APP_PASSWORD = os.getenv("APP_PASSWORD", "DIVINA")
+    ADMIN_BOOTSTRAP_PASSWORD = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "").strip()
     DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", str(BASE_DIR / "Documentos"))).expanduser()
     VECTOR_DIR = Path(os.getenv("VECTOR_DIR", str(BASE_DIR / "banco_vetorial"))).expanduser()
     INDEX_FILE = VECTOR_DIR / "indice.json"
@@ -40,9 +45,19 @@ class Settings:
     MAX_CONTEXT_CHUNKS = int(os.getenv("MAX_CONTEXT_CHUNKS", "16"))
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.08"))
     RAG_DEBUG = os.getenv("RAG_DEBUG", "false").strip().lower() in {"1", "true", "yes", "sim"}
+    RAG_DIAGNOSTIC_RETENTION_DAYS = int(os.getenv("RAG_DIAGNOSTIC_RETENTION_DAYS", "14"))
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1100"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
     APP_PUBLIC_URL = _public_url()
+    RATE_LIMIT_ENABLED = os.getenv(
+        "RATE_LIMIT_ENABLED", "true" if APP_PUBLIC_URL else "false"
+    ).strip().lower() in {"1", "true", "yes", "sim"}
+    COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "sim"}
+    MOBILE_ALLOWED_ORIGINS = _csv_env(
+        "MOBILE_ALLOWED_ORIGINS",
+        "capacitor://localhost,https://localhost,http://localhost",
+    )
+    MAX_UPLOAD_CHUNK_BYTES = int(os.getenv("MAX_UPLOAD_CHUNK_BYTES", str(5 * 1024 * 1024)))
     ASAAS_API_KEY = os.getenv("ASAAS_API_KEY", "").strip()
     ASAAS_WEBHOOK_TOKEN = os.getenv("ASAAS_WEBHOOK_TOKEN", "").strip()
     ASAAS_API_BASE_URL = os.getenv(
@@ -57,6 +72,10 @@ class Settings:
     MERCADO_PAGO_WEBHOOK_SECRET = os.getenv("MERCADO_PAGO_WEBHOOK_SECRET", "").strip()
     MERCADO_PAGO_PRICE = _decimal_env("MERCADO_PAGO_PRICE")
     MERCADO_PAGO_CURRENCY = os.getenv("MERCADO_PAGO_CURRENCY", "BRL").strip().upper()
+    GOOGLE_PLAY_PRODUCT_ID = os.getenv("GOOGLE_PLAY_PRODUCT_ID", "").strip()
+    APPLE_PRODUCT_ID = os.getenv("APPLE_PRODUCT_ID", "").strip()
+    APPLE_SHARED_SECRET = os.getenv("APPLE_SHARED_SECRET", "").strip()
+    GOOGLE_SERVICE_ACCOUNT_CREDENTIALS = os.getenv("GOOGLE_SERVICE_ACCOUNT_CREDENTIALS", "").strip()
 
 
 settings = Settings()

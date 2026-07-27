@@ -171,7 +171,7 @@ class MercadoPagoService:
     ) -> bool:
         """Valida o manifesto HMAC documentado para Webhooks do Mercado Pago."""
         if not self.webhook_secret:
-            return True
+            return False
         if not x_signature or not x_request_id or not data_id:
             return False
 

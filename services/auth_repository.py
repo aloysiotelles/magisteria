@@ -10,6 +10,8 @@ import secrets
 import sqlite3
 
 SESSION_DAYS = 30
+MOBILE_ACCESS_MINUTES = 15
+MOBILE_REFRESH_DAYS = 30
 PASSWORD_ITERATIONS = 260_000
 COUPON_DURATIONS = {
     "dia": timedelta(days=1),
@@ -19,8 +21,9 @@ COUPON_VALIDITY_PERIODS = {*COUPON_DURATIONS, "mes"}
 
 
 class AuthRepository:
-    def __init__(self, database_file: Path):
+    def __init__(self, database_file: Path, admin_bootstrap_password: str = ""):
         self.database_file = database_file
+        self.admin_bootstrap_password = admin_bootstrap_password.strip()
         self.database_file.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
@@ -59,6 +62,24 @@ class AuthRepository:
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS mobile_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token_type TEXT NOT NULL CHECK(token_type IN ('access', 'refresh')),
+                    family_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    replaced_by_hash TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_mobile_tokens_user_family
+                    ON mobile_tokens(user_id, family_id, token_type, expires_at);
+                CREATE TABLE IF NOT EXISTS account_deletion_audit (
+                    event_id TEXT PRIMARY KEY,
+                    requested_at TEXT NOT NULL,
+                    subscription_source TEXT NOT NULL,
+                    subscription_status TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS indexed_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,24 +148,22 @@ class AuthRepository:
                 db.execute(
                     "ALTER TABLE payment_orders ADD COLUMN provider TEXT NOT NULL DEFAULT 'mercado_pago'"
                 )
-        self.ensure_admin()
+        self.ensure_admin(self.admin_bootstrap_password)
 
-    def ensure_admin(self) -> None:
+    def ensure_admin(self, bootstrap_password: str = "") -> None:
+        """Create the administrator only from an explicit bootstrap secret."""
         admin = self.find_user_by_login("Admin")
-        password_hash = self.hash_password("3510")
+        if admin:
+            if admin["role"] != "admin":
+                raise RuntimeError("O login reservado Admin ja pertence a uma conta sem privilegio.")
+            return
+        if not bootstrap_password:
+            return
+        valid, message = self.validate_password_strength(bootstrap_password)
+        if not valid:
+            raise RuntimeError(f"ADMIN_BOOTSTRAP_PASSWORD invalida: {message}")
         now = self._now()
         with self._connect() as db:
-            if admin:
-                db.execute(
-                    """
-                    UPDATE users
-                    SET full_name = 'Administrador', role = 'admin', account_type = 'completa',
-                        subscription_status = 'ativa'
-                    WHERE id = ?
-                    """,
-                    (admin["id"],),
-                )
-                return
             db.execute(
                 """
                 INSERT INTO users (
@@ -152,7 +171,7 @@ class AuthRepository:
                     subscription_started_at, subscription_renews_at, created_at
                 ) VALUES (?, ?, ?, 'admin', 'completa', 'ativa', ?, ?, ?)
                 """,
-                ("Administrador", "Admin", password_hash, now, now, now),
+                ("Administrador", "Admin", self.hash_password(bootstrap_password), now, now, now),
             )
 
     def create_user(self, full_name: str, email: str, password: str) -> tuple[bool, str]:
@@ -723,6 +742,8 @@ class AuthRepository:
                 return False, message
 
             db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (self.hash_password(new_password), user_id))
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            db.execute("UPDATE mobile_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (self._now(), user_id))
         return True, "Senha alterada com sucesso."
 
     def find_user_by_login(self, login: str) -> sqlite3.Row | None:
@@ -756,6 +777,132 @@ class AuthRepository:
         with self._connect() as db:
             db.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _insert_mobile_token_pair(
+        self,
+        db: sqlite3.Connection,
+        user_id: int,
+        family_id: str,
+    ) -> dict[str, str | int]:
+        now = datetime.now(timezone.utc)
+        access_token = secrets.token_urlsafe(32)
+        refresh_token = secrets.token_urlsafe(48)
+        access_expires = now + timedelta(minutes=MOBILE_ACCESS_MINUTES)
+        refresh_expires = now + timedelta(days=MOBILE_REFRESH_DAYS)
+        db.executemany(
+            """INSERT INTO mobile_tokens(
+                   token_hash,user_id,token_type,family_id,created_at,expires_at
+               ) VALUES(?,?,?,?,?,?)""",
+            (
+                (
+                    self._token_hash(access_token), user_id, "access", family_id,
+                    now.isoformat(), access_expires.isoformat(),
+                ),
+                (
+                    self._token_hash(refresh_token), user_id, "refresh", family_id,
+                    now.isoformat(), refresh_expires.isoformat(),
+                ),
+            ),
+        )
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "Bearer",
+            "expires_in": MOBILE_ACCESS_MINUTES * 60,
+        }
+
+    def issue_mobile_tokens(self, user_id: int) -> dict[str, str | int]:
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+                raise ValueError("Usuario nao encontrado.")
+            return self._insert_mobile_token_pair(db, user_id, secrets.token_urlsafe(24))
+
+    def get_user_by_access_token(self, token: str) -> sqlite3.Row | None:
+        if not token:
+            return None
+        now = self._now()
+        token_hash = self._token_hash(token)
+        with self._connect() as db:
+            return db.execute(
+                """SELECT users.* FROM mobile_tokens
+                   JOIN users ON users.id = mobile_tokens.user_id
+                   WHERE mobile_tokens.token_hash = ?
+                     AND mobile_tokens.token_type = 'access'
+                     AND mobile_tokens.revoked_at IS NULL
+                     AND mobile_tokens.expires_at > ?""",
+                (token_hash, now),
+            ).fetchone()
+
+    def rotate_mobile_refresh_token(self, refresh_token: str) -> dict[str, str | int] | None:
+        if not refresh_token:
+            return None
+        token_hash = self._token_hash(refresh_token)
+        now = self._now()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM mobile_tokens WHERE token_hash = ? AND token_type = 'refresh'",
+                (token_hash,),
+            ).fetchone()
+            if not row:
+                return None
+            if row["revoked_at"] or row["expires_at"] <= now:
+                db.execute(
+                    "UPDATE mobile_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE family_id = ?",
+                    (now, row["family_id"]),
+                )
+                return None
+            replacement = self._insert_mobile_token_pair(db, row["user_id"], row["family_id"])
+            db.execute(
+                "UPDATE mobile_tokens SET revoked_at = ?, replaced_by_hash = ? WHERE token_hash = ?",
+                (now, self._token_hash(str(replacement["refresh_token"])), token_hash),
+            )
+            return replacement
+
+    def revoke_mobile_tokens(self, access_token: str = "", refresh_token: str = "") -> None:
+        hashes = [self._token_hash(token) for token in (access_token, refresh_token) if token]
+        if not hashes:
+            return
+        with self._connect() as db:
+            placeholders = ",".join("?" for _ in hashes)
+            families = db.execute(
+                f"SELECT DISTINCT family_id FROM mobile_tokens WHERE token_hash IN ({placeholders})",
+                hashes,
+            ).fetchall()
+            for family in families:
+                db.execute(
+                    "UPDATE mobile_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE family_id = ?",
+                    (self._now(), family["family_id"]),
+                )
+
+    def delete_account(self, user_id: int, password: str) -> tuple[bool, str, dict]:
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user or not self.verify_password(password, user["password_hash"]):
+                return False, "A senha atual nao confere.", {}
+            latest = db.execute(
+                "SELECT provider FROM payment_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            source = str(latest["provider"] if latest else "none")
+            summary = {
+                "subscription_source": source,
+                "subscription_status": str(user["subscription_status"]),
+            }
+            db.execute(
+                """INSERT INTO account_deletion_audit(
+                       event_id,requested_at,subscription_source,subscription_status
+                   ) VALUES(?,?,?,?)""",
+                (secrets.token_urlsafe(24), self._now(), source, summary["subscription_status"]),
+            )
+            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return True, "Conta excluida com sucesso.", summary
+
     def increment_usage(self, user_id: int, field: str) -> None:
         today = datetime.now(timezone.utc).date().isoformat()
         with self._connect() as db:
@@ -769,6 +916,59 @@ class AuthRepository:
                 db.execute("UPDATE users SET script_generation_count = script_generation_count + 1 WHERE id = ?", (user_id,))
             elif field == "presentation":
                 db.execute("UPDATE users SET presentation_generation_count = presentation_generation_count + 1 WHERE id = ?", (user_id,))
+
+    def reserve_usage(self, user_id: int, field: str) -> tuple[bool, str]:
+        """Reserve one unit of work in a single serialized transaction."""
+        if field not in {"query", "script", "presentation"}:
+            raise ValueError("Tipo de uso invalido.")
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                return False, "Usuario nao encontrado."
+            unlimited = (
+                user["role"] == "admin"
+                or user["account_type"] == "completa"
+                or user["subscription_status"] == "ativa"
+            )
+            if field == "query":
+                current = int(user["daily_query_count"] or 0) if user["last_query_date"] == today else 0
+                if not unlimited and current >= 3:
+                    return False, "A versao gratuita permite apenas 3 consultas por dia."
+                db.execute(
+                    "UPDATE users SET daily_query_count = ?, last_query_date = ? WHERE id = ?",
+                    (current + 1, today, user_id),
+                )
+            else:
+                column = "script_generation_count" if field == "script" else "presentation_generation_count"
+                current = int(user[column] or 0)
+                if not unlimited and current >= 1:
+                    label = "roteiro" if field == "script" else "slide"
+                    return False, f"A versao gratuita permite apenas 1 {label}."
+                db.execute(f"UPDATE users SET {column} = {column} + 1 WHERE id = ?", (user_id,))
+        return True, ""
+
+    def release_usage(self, user_id: int, field: str) -> None:
+        """Return a reservation when work fails before producing a result."""
+        if field not in {"query", "script", "presentation"}:
+            raise ValueError("Tipo de uso invalido.")
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if field == "query":
+                db.execute(
+                    """UPDATE users
+                       SET daily_query_count = MAX(daily_query_count - 1, 0)
+                       WHERE id = ? AND last_query_date = ?""",
+                    (user_id, today),
+                )
+            else:
+                column = "script_generation_count" if field == "script" else "presentation_generation_count"
+                db.execute(
+                    f"UPDATE users SET {column} = MAX({column} - 1, 0) WHERE id = ?",
+                    (user_id,),
+                )
 
     def list_users(self) -> list[dict]:
         with self._connect() as db:

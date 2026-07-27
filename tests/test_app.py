@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from types import SimpleNamespace
 import asyncio
@@ -26,13 +27,18 @@ from services.presentation_service import PresentationService, safe_filename
 from services.localization import answer_message
 from services.asaas_service import AsaasService
 from services.mercado_pago_service import MercadoPagoError, MercadoPagoService
+from services.subscription_service import SubscriptionService
 
 
 def authenticated_client() -> TestClient:
     client = TestClient(application.app)
-    response = client.post("/login", data={"email": "Admin", "senha": "3510"})
-    assert response.status_code == 200
-    return client
+    if not application.auth_repository.find_user_by_login("Admin"):
+        application.auth_repository.ensure_admin("AdminTest3510")
+    for password in ("AdminTest3510", "3510"):
+        response = client.post("/login", data={"email": "Admin", "senha": password})
+        if response.url.path == "/":
+            return client
+    raise AssertionError("Nao foi possivel autenticar o administrador de teste.")
 
 
 def create_free_user(client: TestClient, email: str = "teste@exemplo.com", password: str = "Senha123") -> None:
@@ -459,6 +465,25 @@ def test_answer_prompt_requires_consolidated_text():
     assert "O padrão rege somente a forma" in instructions
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in instructions
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in request["input"]
+
+
+def test_catechesis_prompt_goes_directly_to_topic_and_adapts_examples_to_audience():
+    service = AnswerService("chave", "modelo")
+    chunks = [{"source": "Catecismo.txt", "location": "página 1", "text": "Trecho", "score": 1.0}]
+
+    request = service._request_arguments(
+        "Redija uma catequese sobre a esperança cristã para crianças de 8 anos, com exemplos didáticos.",
+        chunks,
+        [],
+    )
+    instructions = request["instructions"]
+
+    assert "a palavra catequese indica apenas o formato pedido pelo usuário" in instructions
+    assert "Se a resposta fizer isso, marque action='rewrite'" in instructions
+    assert "exemplos concretos adequados ao público declarado" in instructions
+    assert service._is_catechesis_request("Prepare uma catequese sobre o perdão para adolescentes.")
+    assert service._is_catechesis_request("Elabore uma catequese sobre a Eucaristia.")
+    assert not service._is_catechesis_request("O que é uma catequese?")
 
 
 def test_homily_corpus_profile_and_presentation_standard():
@@ -1071,8 +1096,8 @@ def test_rag_diagnostics_redacts_and_persists_trace(tmp_path: Path):
     )
 
     item = repository.recent(1)[0]
-    assert "pessoa@example.com" not in item["query_text"]
-    assert "12345678900" not in item["query_text"]
+    assert item["query_text"] == ""
+    assert item["normalized_query"] == ""
     assert item["trace"]["candidate_counts"]["lexical_exact"] == 4
 
 
@@ -1215,8 +1240,8 @@ def test_password_protects_application_and_health_is_public():
     client = TestClient(application.app)
     assert client.get("/health").status_code == 200
     assert client.get("/", follow_redirects=False).headers["location"] == "/login"
-    assert client.post("/login", data={"email": "Admin", "senha": "3510"}).status_code == 200
-    assert client.get("/").status_code == 200
+    admin = authenticated_client()
+    assert admin.get("/").status_code == 200
 
 
 def test_admin_can_clear_document_base(monkeypatch, tmp_path: Path):
@@ -1360,3 +1385,218 @@ def test_foreign_query_is_translated_before_retrieval_and_answered_in_selected_l
     assert calls["retrieval"] == "dignidade da pessoa humana"
     assert calls["answer"] == ("What is human dignity?", "en")
     assert response.json()["resposta"] == "Human dignity is inherent to every person."
+
+
+def test_admin_bootstrap_requires_an_explicit_strong_secret(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "without-admin.sqlite")
+    assert repository.find_user_by_login("Admin") is None
+
+    repository = AuthRepository(
+        tmp_path / "with-admin.sqlite",
+        admin_bootstrap_password="AdminTest3510",
+    )
+    admin = repository.authenticate("Admin", "AdminTest3510")
+    assert admin is not None
+    assert admin["role"] == "admin"
+    assert repository.authenticate("Admin", "3510") is None
+
+
+def test_password_change_revokes_every_existing_session(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "sessions.sqlite")
+    ok, _ = repository.create_user("Usuario Teste", "session@example.com", "SenhaForte1")
+    assert ok
+    user = repository.authenticate("session@example.com", "SenhaForte1")
+    first = repository.create_session(user["id"])
+    second = repository.create_session(user["id"])
+
+    ok, _ = repository.change_password(user["id"], "SenhaForte1", "NovaSenha2")
+
+    assert ok
+    assert repository.get_user_by_session(first) is None
+    assert repository.get_user_by_session(second) is None
+    assert repository.authenticate("session@example.com", "NovaSenha2") is not None
+
+
+def test_usage_reservations_are_atomic_under_concurrency(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "quota.sqlite")
+    ok, _ = repository.create_user("Usuario Teste", "quota@example.com", "SenhaForte1")
+    assert ok
+    user_id = repository.find_user_by_login("quota@example.com")["id"]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        query_results = list(executor.map(lambda _: repository.reserve_usage(user_id, "query"), range(8)))
+        script_results = list(executor.map(lambda _: repository.reserve_usage(user_id, "script"), range(4)))
+        slide_results = list(executor.map(lambda _: repository.reserve_usage(user_id, "presentation"), range(4)))
+
+    assert sum(allowed for allowed, _ in query_results) == 3
+    assert sum(allowed for allowed, _ in script_results) == 1
+    assert sum(allowed for allowed, _ in slide_results) == 1
+
+
+def test_ordinary_user_cannot_trigger_legacy_reindex(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "reindex.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repository)
+    client = TestClient(application.app)
+    create_free_user(client, email="reindex@example.com")
+
+    response = client.post("/indexar")
+
+    assert response.status_code == 403
+
+
+def test_mercado_pago_webhook_fails_closed_without_secret():
+    service = MercadoPagoService("token", "", Decimal("10.00"), "BRL", "https://app.example")
+    assert service.validate_webhook_signature("ts=1,v1=hash", "request-1", "payment-1") is False
+
+
+def test_slide_fallback_does_not_block_the_event_loop(monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+    from pptx import Presentation
+
+    service = PresentationService("", "modelo")
+    Presentation()
+
+    def image_bytes():
+        output = BytesIO()
+        Image.new("RGB", (64, 64), (30, 40, 50)).save(output, "JPEG")
+        output.seek(0)
+        return output
+
+    async def generated_image(*args, **kwargs):
+        return image_bytes()
+
+    def slow_fallback(*args, **kwargs):
+        time.sleep(0.08)
+        return image_bytes()
+
+    monkeypatch.setattr(service, "_generate_image_with_retry", generated_image)
+    monkeypatch.setattr(service, "_fallback_image", slow_fallback)
+    image_bytes()
+
+    async def scenario():
+        task = asyncio.create_task(
+            service.create_pptx(
+                "Tema",
+                [{"titulo": "Topico", "sintese": "Sintese", "pontos": ["Ponto"]}],
+            )
+        )
+        started = time.monotonic()
+        await asyncio.sleep(0.02)
+        heartbeat_elapsed = time.monotonic() - started
+        await task
+        return heartbeat_elapsed
+
+    assert asyncio.run(scenario()) < 0.06
+
+
+def test_mobile_tokens_rotate_and_reuse_revokes_the_family(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "mobile-auth.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repository)
+    assert repository.create_user("Usuario Mobile", "mobile@example.com", "SenhaForte1")[0]
+    client = TestClient(application.app)
+
+    login = client.post(
+        "/api/v1/mobile/auth/login",
+        json={"email": "mobile@example.com", "password": "SenhaForte1"},
+    )
+    assert login.status_code == 200
+    initial = login.json()
+    me = client.get(
+        "/api/v1/mobile/me",
+        headers={"Authorization": f"Bearer {initial['access_token']}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["user"]["email"] == "mobile@example.com"
+
+    rotated = client.post(
+        "/api/v1/mobile/auth/refresh",
+        json={"refresh_token": initial["refresh_token"]},
+    )
+    assert rotated.status_code == 200
+    current = rotated.json()
+    reuse = client.post(
+        "/api/v1/mobile/auth/refresh",
+        json={"refresh_token": initial["refresh_token"]},
+    )
+    assert reuse.status_code == 401
+    assert client.get(
+        "/api/v1/mobile/me",
+        headers={"Authorization": f"Bearer {current['access_token']}"},
+    ).status_code == 401
+
+
+def test_mobile_account_deletion_reauthenticates_and_cascades(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "mobile-delete.sqlite")
+    monkeypatch.setattr(application, "auth_repository", repository)
+    assert repository.create_user("Usuario Mobile", "delete@example.com", "SenhaForte1")[0]
+    client = TestClient(application.app)
+    login = client.post(
+        "/api/v1/mobile/auth/login",
+        json={"email": "delete@example.com", "password": "SenhaForte1"},
+    ).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+
+    denied = client.request(
+        "DELETE",
+        "/api/v1/mobile/account",
+        headers=headers,
+        json={"password": "errada", "confirmation": "EXCLUIR"},
+    )
+    assert denied.status_code == 401
+    deleted = client.request(
+        "DELETE",
+        "/api/v1/mobile/account",
+        headers=headers,
+        json={"password": "SenhaForte1", "confirmation": "EXCLUIR"},
+    )
+    assert deleted.status_code == 200
+    assert repository.find_user_by_login("delete@example.com") is None
+    assert client.get("/api/v1/mobile/me", headers=headers).status_code == 401
+    with repository._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM account_deletion_audit").fetchone()[0] == 1
+
+
+def test_security_headers_and_mobile_cors_are_present():
+    client = TestClient(application.app)
+    response = client.get("/health", headers={"Origin": "capacitor://localhost"})
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert response.headers["access-control-allow-origin"] == "capacitor://localhost"
+
+
+def test_subscription_abstraction_normalizes_web_android_ios_and_free():
+    service = SubscriptionService("google.premium", "apple.premium")
+    user = {
+        "role": "user",
+        "account_type": "completa",
+        "subscription_status": "ativa",
+        "subscription_renews_at": "2026-08-01",
+    }
+    assert service.snapshot(user, "asaas").source == "web"
+    assert service.snapshot(user, "google_play").product_id == "google.premium"
+    assert service.snapshot(user, "apple").source == "ios"
+    free = {**user, "account_type": "gratuita", "subscription_status": "inativa"}
+    assert service.snapshot(free).source == "free"
+    assert service.snapshot(free).is_full_access is False
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/privacy", "Política de privacidade"),
+        ("/terms", "Termos de uso"),
+        ("/support", "Como pedir ajuda"),
+        ("/account-deletion", "EXCLUIR"),
+    ],
+)
+def test_public_store_information_pages_are_complete(path: str, expected: str):
+    response = TestClient(application.app).get(path)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert expected in response.text
+    assert "Aloysio Telles de Moraes Netto" in response.text
+    assert "aplicativo.magisteria@gmail.com" in response.text
+    assert "Texto provisório" not in response.text
