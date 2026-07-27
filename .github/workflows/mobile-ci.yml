@@ -59,7 +59,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:web
       - run: pnpm cap:sync:android
-      - run: chmod +x android/gradlew && ./android/gradlew -p android bundleDebug lintDebug testDebugUnitTest
+      - run: chmod +x android/gradlew && ./android/gradlew -p android bundleDebug bundleRelease lintDebug testDebugUnitTest
 
   ios:
     runs-on: macos-26
@@ -85,9 +85,3 @@ jobs:
           -destination 'generic/platform=iOS Simulator'
           CODE_SIGNING_ALLOWED=NO
           build
-
-  signed-build-placeholder:
-    if: ${{ false }}
-    runs-on: ubuntu-24.04
-    steps:
-      - run: echo 'Enable only after configuring GitHub Environments and store signing secrets.'

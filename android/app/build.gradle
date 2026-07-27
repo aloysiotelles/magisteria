@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+def releaseKeystorePath = System.getenv("MAGISTERIA_ANDROID_KEYSTORE_FILE")
+def releaseKeystorePassword = System.getenv("MAGISTERIA_ANDROID_KEYSTORE_PASSWORD")
+def releaseKeyAlias = System.getenv("MAGISTERIA_ANDROID_KEY_ALIAS")
+def releaseKeyPassword = System.getenv("MAGISTERIA_ANDROID_KEY_PASSWORD")
+def releaseSigningConfigured = [
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+].every { value -> value != null && !value.trim().isEmpty() }
+
 android {
     namespace = "br.com.aloysiotelles.magisteria"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,8 +27,21 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseSigningConfigured) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
