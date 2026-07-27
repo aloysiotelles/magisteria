@@ -11,6 +11,13 @@
 - Produção bloqueada até concluir a configuração, publicar um teste fechado e manter pelo menos 12 participantes por 14 dias.
 - Estado inicial: 0 de 11 tarefas de conteúdo e página da loja concluídas.
 
+## Decisões e bloqueios registrados em 27/07/2026
+
+- O proprietário declarou que o aplicativo não é infantil. Antes de enviar o formulário de público-alvo, confirmar se a seleção será exclusivamente 18 anos ou mais; essa é a recomendação técnica atual.
+- Antes do primeiro AAB assinado, explicar ao proprietário a função da upload key, gerar a chave fora do Git e criar uma cópia de recuperação segura. Não gerar nem enviar a chave sem essa explicação.
+- Push/PR aguardam instalação e autenticação do GitHub CLI (`gh`) neste Windows.
+- O deploy Railway está preparado por `Dockerfile`, `railway.toml` e `/health`, mas ainda não foi executado.
+
 ## Requisitos técnicos atuais
 
 - Aplicativo Android Capacitor 8, `minSdk 24`, `compileSdk 36`, `targetSdk 36`.

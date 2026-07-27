@@ -53,6 +53,8 @@
 ## Lojas
 
 - [x] Registro Android criado no Play Console com `br.com.aloysiotelles.magisteria`.
+- [ ] Confirmar público-alvo exclusivamente 18+; o proprietário já declarou que o app não é infantil.
+- [ ] Explicar a upload key ao proprietário, gerar a chave fora do Git e guardar uma cópia de recuperação antes do AAB.
 - [ ] Ícone, screenshots, descrições, categoria e classificação.
 - [ ] Support URL, Privacy URL e Account Deletion URL.
 - [ ] Play testing requirement concluído, se aplicável.
