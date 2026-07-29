@@ -42,8 +42,13 @@ from services.google_play_billing_service import (
     GooglePlayBillingError,
     GooglePlayBillingService,
 )
+from services.response_planning import PROFILE_INSTRUCTIONS, ResponsePlan, build_response_plan
+from services.response_quality import CoverageValidator
+from services.retrieval_orchestrator import RetrievalOrchestrator
+from services.search_history import UserSearchHistory
+from services.semantic_cache import SemanticCache
 
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9.0"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -89,6 +94,27 @@ subscription_service = SubscriptionService(
     settings.GOOGLE_PLAY_PRODUCT_ID,
     settings.APPLE_PRODUCT_ID,
 )
+semantic_cache = SemanticCache(
+    settings.APP_DATABASE_FILE,
+    settings.SEMANTIC_CACHE_TTL_SECONDS,
+)
+search_history = UserSearchHistory(
+    settings.APP_DATABASE_FILE,
+    retention_days=settings.SEARCH_HISTORY_RETENTION_DAYS,
+    store_original_query=settings.STORE_ORIGINAL_SEARCH_QUERIES,
+)
+retrieval_orchestrator = RetrievalOrchestrator(vector_store, semantic_cache)
+coverage_validator = CoverageValidator()
+
+
+def active_search_history() -> UserSearchHistory:
+    if Path(search_history.database_file).resolve() == Path(auth_repository.database_file).resolve():
+        return search_history
+    return UserSearchHistory(
+        auth_repository.database_file,
+        retention_days=settings.SEARCH_HISTORY_RETENTION_DAYS,
+        store_original_query=settings.STORE_ORIGINAL_SEARCH_QUERIES,
+    )
 google_play_billing_service = GooglePlayBillingService(
     settings.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS,
     settings.GOOGLE_PLAY_PACKAGE_NAME,
@@ -136,6 +162,8 @@ async def perform_indexing() -> dict:
     try:
         async with index_lock:
             result = await asyncio.to_thread(vector_store.index_documents, update_indexing_progress)
+            if result.get("acervo_alterado"):
+                await asyncio.to_thread(semantic_cache.invalidate_all)
         indexing_state.update(ativa=False, percentual=100, arquivo_atual="Base atualizada")
         return result
     except Exception as exc:
@@ -995,6 +1023,7 @@ class QuestionRequest(BaseModel):
     pergunta: str = Field(min_length=1, max_length=2000)
     historico: list[ConversationTurn] = Field(default_factory=list, max_length=6)
     idioma: LanguageCode = "pt-BR"
+    perfil: str = Field(default="adulto_leigo", pattern="^(" + "|".join(PROFILE_INSTRUCTIONS) + ")$")
 
 
 class PasswordChangeRequest(BaseModel):
@@ -1218,6 +1247,53 @@ async def mobile_delete_account(payload: AccountDeletionRequest, request: Reques
     return {"message": message, "subscription": subscription}
 
 
+@app.get("/api/v1/mobile/history")
+async def mobile_search_history(
+    request: Request,
+    search: str = "",
+    sort: str = "date",
+    limit: int = 100,
+):
+    user = current_user(request)
+    if sort not in {"date", "frequency"}:
+        raise HTTPException(status_code=400, detail="Ordenação de histórico inválida.")
+    items = await asyncio.to_thread(
+        active_search_history().list,
+        user["id"],
+        search=search,
+        sort=sort,
+        limit=limit,
+    )
+    return {"items": items}
+
+
+@app.get("/api/v1/mobile/history/{history_id}/requery")
+async def mobile_requery_history(history_id: int, request: Request):
+    user = current_user(request)
+    item = await asyncio.to_thread(active_search_history().get_for_requery, user["id"], history_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Consulta do histórico não encontrada.")
+    # The client must submit this query through the normal ask endpoint. No old
+    # answer is returned, so corpus version and semantic cache are checked again.
+    return item
+
+
+@app.delete("/api/v1/mobile/history/{history_id}", status_code=204)
+async def mobile_delete_history_item(history_id: int, request: Request):
+    user = current_user(request)
+    deleted = await asyncio.to_thread(active_search_history().delete, user["id"], history_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Consulta do histórico não encontrada.")
+    return Response(status_code=204)
+
+
+@app.delete("/api/v1/mobile/history", status_code=204)
+async def mobile_clear_history(request: Request):
+    user = current_user(request)
+    await asyncio.to_thread(active_search_history().clear, user["id"])
+    return Response(status_code=204)
+
+
 PUBLIC_CONTROLLER = "Aloysio Telles de Moraes Netto"
 PUBLIC_SUPPORT_EMAIL = "aplicativo.magisteria@gmail.com"
 
@@ -1254,10 +1330,11 @@ async def privacy_page():
         "Política de privacidade",
         "Esta política explica como o MAGISTERIA trata dados pessoais ao oferecer seus serviços web e Android.",
         [
-            ("Dados tratados", "Dados de cadastro e autenticação, como nome, e-mail e hash da senha; perguntas e conteúdos enviados para gerar respostas; dados de uso, franquias, sessões e diagnósticos técnicos limitados; e informações de assinatura ou pagamento quando esse recurso for utilizado."),
+            ("Dados tratados", "Dados de cadastro e autenticação, como nome, e-mail e hash da senha; perguntas e conteúdos enviados para gerar respostas; histórico privado de temas consultados; dados de uso, franquias, sessões e diagnósticos técnicos limitados; e informações de assinatura ou pagamento quando esse recurso for utilizado."),
             ("Finalidades", "Os dados são usados para criar e proteger a conta, fornecer respostas e arquivos solicitados, aplicar limites de uso, prestar suporte, prevenir abuso, manter o serviço e cumprir obrigações legais."),
             ("Operadores e compartilhamento", "Dados necessários podem ser processados por provedores de hospedagem, inteligência artificial, e-mail, pagamento e distribuição do aplicativo. Não vendemos dados pessoais. Cada provedor recebe somente o necessário para sua função e está sujeito às respectivas políticas e contratos."),
-            ("Retenção", "Dados da conta são mantidos enquanto ela estiver ativa. Sessões e tokens expiram ou são revogados. Diagnósticos técnicos tipados têm retenção padrão de 14 dias. Registros mínimos podem ser preservados quando necessários para segurança, prevenção a fraude ou obrigação legal."),
+            ("Histórico e cache", "O histórico pertence exclusivamente à conta autenticada, pode ser excluído por item ou integralmente e tem retenção configurável. O cache reutiliza somente classificação e evidências documentais, nunca a resposta gerada nem dados pessoais do histórico."),
+            ("Retenção", "Dados da conta são mantidos enquanto ela estiver ativa. Sessões e tokens expiram ou são revogados. Diagnósticos técnicos tipados têm retenção padrão de 14 dias e não guardam o texto aberto da consulta. O histórico tem retenção padrão de 365 dias. Registros mínimos podem ser preservados quando necessários para segurança, prevenção a fraude ou obrigação legal."),
             ("Segurança", "Usamos HTTPS, senhas derivadas por hash, tokens móveis rotativos armazenados de forma segura, controles de acesso e limitação de requisições. Nenhum sistema é totalmente imune a incidentes, mas adotamos medidas proporcionais aos riscos."),
             ("Seus direitos", "Você pode solicitar acesso, correção, informação, oposição ou exclusão de dados pelos canais desta página, conforme a legislação aplicável. A exclusão também pode ser iniciada no aplicativo."),
             ("Crianças e adolescentes", "O serviço não deve ser usado para criar uma conta por pessoa sem capacidade legal ou autorização de seu responsável. Responsáveis podem contatar o suporte para exercer direitos sobre dados."),
@@ -1324,54 +1401,51 @@ def retrieval_query(payload: QuestionRequest) -> str:
     return question
 
 
-def ordered_chunks(payload: QuestionRequest, query_override: str | None = None) -> list[dict]:
-    return vector_store.search_ordered(
-        query_override or retrieval_query(payload),
-        limit=max(settings.MAX_CONTEXT_CHUNKS, 16),
-        minimum_score=settings.MIN_RELEVANCE_SCORE,
-        excluded_sources=auth_repository.inactive_sources(),
-    )
+def ordered_chunks(
+    payload: QuestionRequest,
+    query_override: str | None = None,
+    plan: ResponsePlan | None = None,
+) -> list[dict]:
+    chunks, _ = ordered_chunks_with_diagnostics(payload, query_override, plan)
+    return chunks
 
 
 def ordered_chunks_with_diagnostics(
     payload: QuestionRequest,
     query_override: str | None = None,
+    plan: ResponsePlan | None = None,
 ) -> tuple[list[dict], dict]:
     search_query = query_override or retrieval_query(payload)
-    result = vector_store.search_ordered(
+    selected_plan = plan or build_response_plan(
+        payload.pergunta,
+        normalize_language(payload.idioma),
+        payload.perfil,
+    )
+    bundle = retrieval_orchestrator.retrieve(
         search_query,
-        limit=max(settings.MAX_CONTEXT_CHUNKS, 16),
+        selected_plan,
         minimum_score=settings.MIN_RELEVANCE_SCORE,
         excluded_sources=auth_repository.inactive_sources(),
-        include_diagnostics=True,
     )
-    if isinstance(result, tuple):
-        chunks, diagnostics = result
-        if settings.RAG_DEBUG:
-            logger.info(
-                "rag_retrieval=%s",
-                json.dumps(
-                    {
-                        "query": redact_query(payload.pergunta),
-                        "type": diagnostics.get("query", {}).get("query_type"),
-                        "candidate_counts": diagnostics.get("candidate_counts", {}),
-                        "selected_count": len(diagnostics.get("selected_chunks", [])),
-                        "threshold_policy": diagnostics.get("threshold_policy"),
-                    },
-                    ensure_ascii=False,
-                    default=str,
-                ),
-            )
-        return chunks, diagnostics
-    analysis = analyze_query(search_query)
-    return result, {
-        "query": analysis.to_dict(),
-        "candidate_counts": {},
-        "candidates_fused": len(result),
-        "reranking": [],
-        "selected_chunks": [],
-        "final_count": len(result),
-    }
+    diagnostics = bundle.diagnostics
+    if settings.RAG_DEBUG:
+        logger.info(
+            "rag_retrieval=%s",
+            json.dumps(
+                {
+                    "query": redact_query(payload.pergunta),
+                    "type": diagnostics.get("query", {}).get("query_type"),
+                    "depth": selected_plan.depth,
+                    "components": len(selected_plan.active_components),
+                    "candidate_counts": diagnostics.get("candidate_counts", {}),
+                    "selected_count": len(diagnostics.get("selected_chunks", [])),
+                    "cache_hit": bundle.cache_hit,
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+    return bundle.chunks, diagnostics
 
 
 def retrieval_notice(chunks: list[dict], diagnostics: dict, language: str = "pt-BR") -> str:
@@ -1390,6 +1464,54 @@ def retrieval_notice(chunks: list[dict], diagnostics: dict, language: str = "pt-
 
 def estimated_context_tokens(chunks: list[dict]) -> int:
     return sum(max(len(str(chunk.get("text", ""))) // 4, 1) for chunk in chunks)
+
+
+def estimated_model_cost(input_tokens: int, output_tokens: int) -> float:
+    return (
+        input_tokens * settings.OPENAI_INPUT_COST_PER_MILLION
+        + output_tokens * settings.OPENAI_OUTPUT_COST_PER_MILLION
+    ) / 1_000_000
+
+
+def actually_used_chunks(chunks: list[dict], result: dict) -> list[dict]:
+    indexes = {
+        int(index) for index in result.get("used_source_indexes", [])
+        if isinstance(index, int) or str(index).isdigit()
+    }
+    selected = [
+        {**chunk, "citation_index": position}
+        for position, chunk in enumerate(chunks, 1)
+        if position in indexes
+    ]
+    return selected or [
+        {**chunk, "citation_index": position}
+        for position, chunk in enumerate(chunks, 1)
+    ]
+
+
+def response_metadata(plan: ResponsePlan, diagnostics: dict, result: dict) -> dict:
+    remaining = list(plan.components[len(plan.active_components):])
+    continuation_query = ""
+    if remaining:
+        continuation_query = (
+            f"Continue o estudo de {plan.display_title}, detalhando agora: "
+            + ", ".join(remaining[:10])
+        )
+    return {
+        "plan": {
+            "topic": plan.display_title,
+            "category": plan.category,
+            "depth": plan.depth,
+            "composite": plan.composite,
+            "components": list(plan.components),
+            "covered_components": list(plan.active_components),
+            "continuation_required": plan.continuation_required,
+        },
+        "suggestions": list(plan.suggestions),
+        "continuation_query": continuation_query,
+        "cache_hit": bool(diagnostics.get("cache_hit")),
+        "coverage": result.get("coverage", {}),
+    }
 
 
 def homily_style_chunks(payload: QuestionRequest, query_override: str | None = None) -> list[dict]:
@@ -1446,6 +1568,7 @@ async def ask(payload: QuestionRequest, request: Request):
         raise HTTPException(status_code=403, detail=message)
     question = payload.pergunta.strip()
     language = normalize_language(payload.idioma)
+    plan = build_response_plan(question, language, payload.perfil)
     request_id = new_request_id()
     started = time.monotonic()
     try:
@@ -1460,18 +1583,23 @@ async def ask(payload: QuestionRequest, request: Request):
         logger.exception("Falha ao traduzir a consulta para recuperação em português.")
         raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
     chunks, diagnostics = await asyncio.to_thread(
-        ordered_chunks_with_diagnostics, payload, search_query_pt
+        ordered_chunks_with_diagnostics, payload, search_query_pt, plan
     )
     if chunks:
-        style_chunks = await asyncio.to_thread(
-            homily_style_chunks, payload, search_query_pt
-        ) if language != "pt-BR" else await asyncio.to_thread(homily_style_chunks, payload)
+        needs_homily_style = "pastoral" in plan.intents
+        style_chunks = (
+            await asyncio.to_thread(homily_style_chunks, payload, search_query_pt)
+            if needs_homily_style and language != "pt-BR"
+            else await asyncio.to_thread(homily_style_chunks, payload)
+            if needs_homily_style
+            else []
+        )
     else:
         style_chunks = []
     history = [turn.model_dump() for turn in payload.historico]
     try:
         result = await answer_service.answer_with_review(
-            question, chunks, history, style_chunks, language
+            question, chunks, history, style_chunks, language, plan
         )
     except RuntimeError as exc:
         await asyncio.to_thread(
@@ -1479,6 +1607,9 @@ async def ask(payload: QuestionRequest, request: Request):
             round((time.monotonic() - started) * 1000), "technical_failure",
             error=str(exc), final_reason=TECHNICAL_FAILURE_MESSAGE,
             context_tokens=estimated_context_tokens(chunks),
+            depth_level=plan.depth, topic_category=plan.category, component_count=len(plan.active_components),
+            strategy_version=plan.strategy_version, retrieved_chunk_count=len(chunks),
+            cache_hit=bool(diagnostics.get("cache_hit")),
         )
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -1487,8 +1618,13 @@ async def ask(payload: QuestionRequest, request: Request):
             round((time.monotonic() - started) * 1000), "technical_failure",
             error=type(exc).__name__, final_reason=TECHNICAL_FAILURE_MESSAGE,
             context_tokens=estimated_context_tokens(chunks),
+            depth_level=plan.depth, topic_category=plan.category, component_count=len(plan.active_components),
+            strategy_version=plan.strategy_version, retrieved_chunk_count=len(chunks),
+            cache_hit=bool(diagnostics.get("cache_hit")),
         )
         raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
+    used_chunks = actually_used_chunks(chunks, result)
+    await asyncio.to_thread(active_search_history().record, user["id"], question, plan)
     await asyncio.to_thread(
         rag_diagnostics.record, request_id, question, diagnostics,
         round((time.monotonic() - started) * 1000),
@@ -1496,6 +1632,20 @@ async def ask(payload: QuestionRequest, request: Request):
         validator={"decision": result["status_revisao"], "reason": result["motivo_revisao"]},
         final_reason=result["motivo_revisao"],
         context_tokens=estimated_context_tokens(chunks),
+        estimated_cost=estimated_model_cost(
+            result.get("input_tokens_estimated", 0), result.get("output_tokens_estimated", 0)
+        ),
+        depth_level=plan.depth,
+        topic_category=plan.category,
+        strategy_version=plan.strategy_version,
+        component_count=len(plan.active_components),
+        retrieved_chunk_count=len(chunks),
+        input_tokens_estimated=result.get("input_tokens_estimated", 0),
+        output_tokens_estimated=result.get("output_tokens_estimated", 0),
+        cache_hit=bool(diagnostics.get("cache_hit")),
+        coverage_failures=result.get("coverage", {}).get("failure_count", 0),
+        citation_errors=len(result.get("coverage", {}).get("invalid_citations", [])),
+        regenerated=bool(result.get("regenerated")),
     )
     return {
         "request_id": request_id,
@@ -1503,7 +1653,8 @@ async def ask(payload: QuestionRequest, request: Request):
         "status_revisao": result["status_revisao"],
         "motivo_revisao": result["motivo_revisao"],
         "mensagem_busca": retrieval_notice(chunks, diagnostics, language),
-        "fontes": format_sources(chunks),
+        "fontes": format_sources(used_chunks),
+        "metadados": response_metadata(plan, diagnostics, result),
     }
 
 
@@ -1518,6 +1669,7 @@ async def ask_stream(payload: QuestionRequest, request: Request):
 
     question = payload.pergunta.strip()
     language = normalize_language(payload.idioma)
+    plan = build_response_plan(question, language, payload.perfil)
     request_id = new_request_id()
     started = time.monotonic()
     try:
@@ -1532,12 +1684,17 @@ async def ask_stream(payload: QuestionRequest, request: Request):
         logger.exception("Falha ao traduzir a consulta para recuperação em português.")
         raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
     chunks, diagnostics = await asyncio.to_thread(
-        ordered_chunks_with_diagnostics, payload, search_query_pt
+        ordered_chunks_with_diagnostics, payload, search_query_pt, plan
     )
     if chunks:
-        style_chunks = await asyncio.to_thread(
-            homily_style_chunks, payload, search_query_pt
-        ) if language != "pt-BR" else await asyncio.to_thread(homily_style_chunks, payload)
+        needs_homily_style = "pastoral" in plan.intents
+        style_chunks = (
+            await asyncio.to_thread(homily_style_chunks, payload, search_query_pt)
+            if needs_homily_style and language != "pt-BR"
+            else await asyncio.to_thread(homily_style_chunks, payload)
+            if needs_homily_style
+            else []
+        )
     else:
         style_chunks = []
     history = [turn.model_dump() for turn in payload.historico]
@@ -1556,8 +1713,10 @@ async def ask_stream(payload: QuestionRequest, request: Request):
         ) + "\n"
         try:
             result = await answer_service.answer_with_review(
-                question, chunks, history, style_chunks, language
+                question, chunks, history, style_chunks, language, plan
             )
+            used_chunks = actually_used_chunks(chunks, result)
+            await asyncio.to_thread(active_search_history().record, user["id"], question, plan)
             await asyncio.to_thread(
                 rag_diagnostics.record, request_id, question, diagnostics,
                 round((time.monotonic() - started) * 1000),
@@ -1565,7 +1724,31 @@ async def ask_stream(payload: QuestionRequest, request: Request):
                 validator={"decision": result["status_revisao"], "reason": result["motivo_revisao"]},
                 final_reason=result["motivo_revisao"],
                 context_tokens=estimated_context_tokens(chunks),
+                estimated_cost=estimated_model_cost(
+                    result.get("input_tokens_estimated", 0), result.get("output_tokens_estimated", 0)
+                ),
+                depth_level=plan.depth,
+                topic_category=plan.category,
+                strategy_version=plan.strategy_version,
+                component_count=len(plan.active_components),
+                retrieved_chunk_count=len(chunks),
+                input_tokens_estimated=result.get("input_tokens_estimated", 0),
+                output_tokens_estimated=result.get("output_tokens_estimated", 0),
+                cache_hit=bool(diagnostics.get("cache_hit")),
+                coverage_failures=result.get("coverage", {}).get("failure_count", 0),
+                citation_errors=len(result.get("coverage", {}).get("invalid_citations", [])),
+                regenerated=bool(result.get("regenerated")),
             )
+            yield json.dumps(
+                {
+                    "tipo": "fontes",
+                    "request_id": request_id,
+                    "mensagem_busca": retrieval_notice(used_chunks, diagnostics, language),
+                    "fontes": format_sources(used_chunks),
+                    "referencias_abnt": format_abnt_references(used_chunks),
+                },
+                ensure_ascii=False,
+            ) + "\n"
             yield json.dumps(
                 {
                     "tipo": "texto",
@@ -1573,6 +1756,10 @@ async def ask_stream(payload: QuestionRequest, request: Request):
                     "status_revisao": result["status_revisao"],
                     "motivo_revisao": result["motivo_revisao"],
                 },
+                ensure_ascii=False,
+            ) + "\n"
+            yield json.dumps(
+                {"tipo": "metadados", **response_metadata(plan, diagnostics, result)},
                 ensure_ascii=False,
             ) + "\n"
             yield json.dumps({"tipo": "fim"}) + "\n"
@@ -1586,6 +1773,9 @@ async def ask_stream(payload: QuestionRequest, request: Request):
                 round((time.monotonic() - started) * 1000), "technical_failure",
                 error="answer_generation_failure", final_reason=TECHNICAL_FAILURE_MESSAGE,
                 context_tokens=estimated_context_tokens(chunks),
+                depth_level=plan.depth, topic_category=plan.category, component_count=len(plan.active_components),
+                strategy_version=plan.strategy_version, retrieved_chunk_count=len(chunks),
+                cache_hit=bool(diagnostics.get("cache_hit")),
             )
             yield json.dumps(
                 {"tipo": "erro", "mensagem": answer_message("technical_failure", language)},
@@ -1755,6 +1945,12 @@ async def admin_rag_diagnostics(request: Request, limit: int = 100):
     return {"consultas": await asyncio.to_thread(rag_diagnostics.recent, limit)}
 
 
+@app.get("/admin/rag/metricas")
+async def admin_rag_metrics(request: Request, days: int = 30):
+    require_admin(request)
+    return await asyncio.to_thread(rag_diagnostics.aggregate, days)
+
+
 @app.post("/admin/rag/repetir")
 async def admin_repeat_rag(payload: dict, request: Request):
     require_admin(request)
@@ -1818,6 +2014,7 @@ async def deactivate_document(payload: dict, request: Request):
     if not source:
         raise HTTPException(status_code=400, detail="Documento invalido.")
     auth_repository.set_document_active(source, False)
+    await asyncio.to_thread(semantic_cache.invalidate_all)
     return {"mensagem": "Documento desativado para novas consultas."}
 
 
@@ -1828,6 +2025,7 @@ async def activate_document(payload: dict, request: Request):
     if not source:
         raise HTTPException(status_code=400, detail="Documento invalido.")
     auth_repository.set_document_active(source, True)
+    await asyncio.to_thread(semantic_cache.invalidate_all)
     return {"mensagem": "Documento ativado para novas consultas."}
 
 

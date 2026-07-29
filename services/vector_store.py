@@ -184,6 +184,7 @@ class LocalVectorStore:
             progress_callback(0, len(documents), "Preparando documentos")
         with self._connect() as db:
             known = {row["source"]: (row["size"], row["mtime_ns"]) for row in db.execute("SELECT * FROM files")}
+            changed = bool(set(known) - set(names))
             for removed in set(known) - set(names):
                 db.execute("DELETE FROM chunks WHERE source = ?", (removed,))
                 db.execute("DELETE FROM files WHERE source = ?", (removed,))
@@ -195,6 +196,7 @@ class LocalVectorStore:
                     if progress_callback:
                         progress_callback(position, len(documents), f"Reutilizado: {path.name}")
                     continue
+                changed = True
                 if progress_callback:
                     progress_callback(position - 1, len(documents), f"Lendo {position} de {len(documents)}: {path.name}")
                 db.execute("DELETE FROM chunks WHERE source = ?", (source,))
@@ -219,11 +221,13 @@ class LocalVectorStore:
                 db.commit()
                 if progress_callback:
                     progress_callback(position, len(documents), path.name)
-            updated = datetime.now(timezone.utc).isoformat()
-            db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
+            current_version = db.execute("SELECT value FROM metadata WHERE key='updated_at'").fetchone()
+            if changed or current_version is None:
+                updated = datetime.now(timezone.utc).isoformat()
+                db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
         with self._search_cache_lock:
             self._search_cache.clear()
-        return self.status()
+        return {**self.status(), "acervo_alterado": changed}
 
     def _cached_search(self, key: tuple):
         now = time.monotonic()

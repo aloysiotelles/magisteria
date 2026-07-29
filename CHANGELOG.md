@@ -4,6 +4,17 @@ Todas as alterações relevantes deste projeto serão registradas aqui.
 
 ## Unreleased
 
+## 0.9.0
+
+- Consultas compostas passam por classificação, decomposição temática e plano de cobertura antes da busca.
+- Adicionada recuperação documental em camadas, reranking por pertinência e autoridade, deduplicação e orçamento dinâmico de tokens.
+- Respostas aprofundadas validam componentes e marcações de fontes antes da entrega.
+- Adicionado cache semântico de planos e evidências, invalidado quando o acervo muda; respostas antigas nunca são reutilizadas.
+- Adicionado histórico privado por conta, com pesquisa, ordenação, repetição segura, exclusão individual e limpeza integral.
+- Adicionadas sugestões relacionadas e adaptação de linguagem por perfil no aplicativo Android.
+- Ampliadas as métricas agregadas de custo, tokens, cobertura, cache e latência sem registrar o texto das consultas.
+- Preparado o Android `0.9.0 (900)` para a próxima rodada de testes na Play Console.
+
 ## 0.8.1
 
 - Corrigida a cor do texto e do cursor no campo de pesquisa do Android.

@@ -9,6 +9,8 @@ import re
 import secrets
 import sqlite3
 
+from services.migrations import apply_migrations
+
 SESSION_DAYS = 30
 MOBILE_ACCESS_MINUTES = 15
 MOBILE_REFRESH_DAYS = 30
@@ -166,6 +168,7 @@ class AuthRepository:
                 db.execute(
                     "ALTER TABLE payment_orders ADD COLUMN provider TEXT NOT NULL DEFAULT 'mercado_pago'"
                 )
+            apply_migrations(db, Path(__file__).resolve().parents[1] / "migrations")
         self.ensure_admin(self.admin_bootstrap_password)
 
     def ensure_admin(self, bootstrap_password: str = "") -> None:

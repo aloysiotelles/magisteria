@@ -65,6 +65,7 @@
             <button id="rag-button" class="utility-button" type="button">Diagnóstico RAG</button>
           </div>
           <button id="database-button" class="utility-button" type="button">Base de dados</button>
+          <button id="history-button" class="utility-button" type="button">Histórico de consultas</button>
           <button id="subscription-button" class="utility-button" type="button">Assinatura</button>
           <button id="change-password-button" class="utility-button" type="button">Alterar senha</button>
           <button id="about-button" class="utility-button" type="button">Sobre</button>
@@ -93,6 +94,21 @@
           <form id="question-form">
             <label class="sr-only" for="question">Digite sua pergunta</label>
             <textarea id="question" rows="4" minlength="1" maxlength="2000" placeholder="Ex.: O que os documentos ensinam sobre a dignidade da pessoa humana?" required></textarea>
+            <div class="search-preferences">
+              <label for="profile-select">Explicar para</label>
+              <select id="profile-select">
+                <option value="adulto_leigo">Adulto leigo</option>
+                <option value="crianca">Criança</option>
+                <option value="adolescente">Adolescente</option>
+                <option value="catequizando">Catequizando</option>
+                <option value="adulto_iniciacao">Adulto em iniciação cristã</option>
+                <option value="catequista">Catequista</option>
+                <option value="agente_pastoral">Agente pastoral</option>
+                <option value="estudante_teologia">Estudante de teologia</option>
+                <option value="clerigo">Clérigo</option>
+                <option value="pesquisador">Pesquisador</option>
+              </select>
+            </div>
             <button id="ask-button" class="primary-button search-button" type="submit">⌕ Pesquisar</button>
           </form>
           <p class="privacy-note">A pesquisa é feita exclusivamente nos documentos cadastrados. Nenhuma busca aberta na internet é realizada.</p>
@@ -107,7 +123,12 @@
           <article id="answer-card" class="panel answer-card" aria-live="polite">
             <div class="card-title"><span>✦</span><h2>Resposta</h2></div>
             <h3 id="answer-title" class="answer-question">Síntese</h3>
+            <p id="answer-depth" class="depth-badge" hidden></p>
             <div id="answer-text" class="answer-text"></div>
+            <section id="suggestions-section" class="suggestions-section" hidden>
+              <p class="eyebrow">Aprofunde este tema</p>
+              <div id="suggestions-list" class="suggestions-list"></div>
+            </section>
             <section class="presentation-module">
               <p class="eyebrow">Roteiro e apresentação</p>
               <h3>Transforme esta pesquisa em material para apresentar</h3>
@@ -137,6 +158,20 @@
       <div class="dialog-header"><div><p class="eyebrow">Biblioteca documental</p><h2>Base de dados</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
       <p id="database-summary" class="modal-intro">Consultando documentos…</p>
       <ul id="database-list" class="data-list"></ul>
+    </dialog>
+
+    <dialog id="history-dialog" class="wide-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Sua conta</p><h2>Histórico de consultas</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <p class="modal-intro">Ao abrir um tema, o MAGISTERIA refaz a pesquisa com a base documental atual.</p>
+      <div class="history-controls">
+        <label for="history-search">Pesquisar</label>
+        <input id="history-search" type="search" maxlength="120" placeholder="Tema consultado" />
+        <label for="history-sort">Ordenar</label>
+        <select id="history-sort"><option value="date">Mais recentes</option><option value="frequency">Mais consultados</option></select>
+        <button id="clear-history" class="danger-button" type="button">Limpar histórico</button>
+      </div>
+      <p id="history-status" class="modal-intro" aria-live="polite"></p>
+      <div id="history-list" class="record-list"></div>
     </dialog>
 
     <dialog id="subscription-dialog">

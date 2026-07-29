@@ -4,7 +4,7 @@ Aplicativo web de pesquisa pastoral em uma base documental fechada. O sistema l�
 
 ## O que esta versão faz
 
-A versão 0.8.0 acrescenta uma interface poliglota em português, inglês e espanhol sem alterar a base documental em português. Perguntas feitas nos idiomas estrangeiros são convertidas para português antes da recuperação; somente a resposta final e os materiais derivados são redigidos no idioma escolhido. A recuperação continua combinando correspondência lexical exata, variantes ortográficas e morfológicas seguras, expansão semântica controlada, títulos/metadados, remissões dos índices internos e fallback global.
+A versão 0.9.0 acrescenta planejamento de respostas compostas e aprofundadas, histórico privado no Android e cache semântico de evidências, preservando a interface poliglota em português, inglês e espanhol. Perguntas feitas nos idiomas estrangeiros são convertidas para português antes da recuperação; somente a resposta final e os materiais derivados são redigidos no idioma escolhido.
 
 - aceita arquivos PDF, DOCX, TXT e Markdown;
 - permite escolher português, inglês ou espanhol na barra superior e preserva a escolha no navegador;
@@ -15,6 +15,12 @@ A versão 0.8.0 acrescenta uma interface poliglota em português, inglês e espa
 - reaproveita o índice dos arquivos inalterados e processa somente documentos novos, modificados ou removidos;
 - responde com indicação de arquivo e página/local;
 - reconhece pedidos por fontes específicas, combina as vias híbridas de recuperação e transmite a resposta progressivamente;
+- classifica intenção e profundidade, decompõe temas católicos reconhecidos e pesquisa cada componente em camadas;
+- aplica reranking por pertinência e natureza da fonte, deduplicação e orçamento dinâmico de contexto;
+- valida cobertura dos componentes e marcações de fonte antes de entregar respostas aprofundadas;
+- reutiliza apenas planos e evidências documentais no cache; cada resposta é novamente redigida para a pergunta e o perfil atuais;
+- oferece histórico privado por conta com pesquisa, ordenação, repetição segura e exclusão;
+- adapta a linguagem ao perfil escolhido e sugere aprofundamentos por regras da taxonomia;
 - segue a ordem editorial: Catecismo, Compêndio dos símbolos, Doutrina Social, Suma Teológica, Bíblia Ave Maria e demais documentos;
 - mantém o contexto das perguntas recentes e posiciona o prompt de continuação dentro da resposta atual, logo abaixo dos botões de roteiro e slides;
 - detecta respostas interrompidas por limite de saída e solicita automaticamente sua continuação;

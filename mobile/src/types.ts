@@ -30,14 +30,47 @@ export interface StoredSession {
 }
 
 export interface AskSource {
+  arquivo?: string;
   documento?: string;
   source?: string;
   local?: string;
+  marcador?: string;
+}
+
+export interface SearchHistoryItem {
+  id: number;
+  normalized_topic: string;
+  display_title: string;
+  topic_category: string;
+  depth_level: 'resumido' | 'explicativo' | 'aprofundado';
+  language: string;
+  created_at: string;
+  last_searched_at: string;
+  search_count: number;
+  repeated: boolean;
+  query?: string;
+}
+
+export interface AskMetadata {
+  plan: {
+    topic: string;
+    category: string;
+    depth: string;
+    composite: boolean;
+    components: string[];
+    covered_components: string[];
+    continuation_required: boolean;
+  };
+  suggestions: string[];
+  continuation_query: string;
+  cache_hit: boolean;
+  coverage: Record<string, unknown>;
 }
 
 export type AskEvent =
   | { tipo: 'fontes'; request_id: string; mensagem_busca: string; fontes: AskSource[] }
   | { tipo: 'texto'; texto: string; status_revisao: string; motivo_revisao: string }
+  | ({ tipo: 'metadados' } & AskMetadata)
   | { tipo: 'erro'; mensagem: string }
   | { tipo: 'fim' };
 

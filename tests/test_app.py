@@ -1093,12 +1093,22 @@ def test_rag_diagnostics_redacts_and_persists_trace(tmp_path: Path):
         },
         25,
         "success",
+        strategy_version="layered-rag-1",
+        retrieved_chunk_count=6,
+        input_tokens_estimated=1800,
+        output_tokens_estimated=700,
+        estimated_cost=0.001,
+        citation_errors=1,
     )
 
     item = repository.recent(1)[0]
+    aggregate = repository.aggregate(30)
     assert item["query_text"] == ""
     assert item["normalized_query"] == ""
     assert item["trace"]["candidate_counts"]["lexical_exact"] == 4
+    assert item["strategy_version"] == "layered-rag-1"
+    assert aggregate["citation_errors"] == 1
+    assert aggregate["strategy_comparison"][0]["average_input_tokens"] == 1800
 
 
 def test_startup_reindexes_documents(monkeypatch):
@@ -1361,11 +1371,11 @@ def test_foreign_query_is_translated_before_retrieval_and_answered_in_selected_l
             calls["translation"] = (query, source_language)
             return "dignidade da pessoa humana"
 
-        async def answer_with_review(self, question, chunks, history, style_chunks, language):
+        async def answer_with_review(self, question, chunks, history, style_chunks, language, plan=None):
             calls["answer"] = (question, language)
             return {"resposta": "Human dignity is inherent to every person.", "status_revisao": "approve", "motivo_revisao": ""}
 
-    def fake_retrieval(payload, query_override=None):
+    def fake_retrieval(payload, query_override=None, plan=None):
         calls["retrieval"] = query_override
         return ([{
             "source": "Catecismo.txt", "location": "página 1", "text": "A dignidade é inerente.",

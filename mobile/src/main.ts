@@ -9,7 +9,7 @@ import {
   purchasePlaySubscription,
   restorePlayPurchases,
 } from './play-billing';
-import { ApiError, type AskEvent, type AskSource, type MobileUser } from './types';
+import { ApiError, type AskEvent, type AskMetadata, type AskSource, type MobileUser, type SearchHistoryItem } from './types';
 
 type AppLanguage = 'pt-BR' | 'en' | 'es';
 type UnknownRecord = Record<string, unknown>;
@@ -31,10 +31,12 @@ const offlineBanner = element<HTMLElement>('#offline-banner');
 const serverBanner = element<HTMLElement>('#server-banner');
 const toast = element<HTMLElement>('#toast');
 const languageSelect = element<HTMLSelectElement>('#language-select');
+const profileSelect = element<HTMLSelectElement>('#profile-select');
 let registerMode = false;
 let currentQuestion = '';
 let currentAnswer = '';
 let currentLanguage: AppLanguage = savedLanguage();
+let currentProfile = localStorage.getItem('magisteria-profile') || 'adulto_leigo';
 let connected = true;
 let busy = false;
 let toastTimer = 0;
@@ -179,10 +181,34 @@ function renderSources(sources: AskSource[]): void {
   list.replaceChildren();
   for (const source of sources) {
     const item = document.createElement('li');
-    item.textContent = [source.documento || source.source || 'Documento', source.local].filter(Boolean).join(' — ');
+    item.textContent = [source.marcador ? `[${source.marcador}]` : '', source.arquivo || source.documento || source.source || 'Documento', source.local].filter(Boolean).join(' — ');
     list.append(item);
   }
   element('#source-section').hidden = sources.length === 0;
+}
+
+function renderSuggestions(metadata: AskMetadata): void {
+  const section = element<HTMLElement>('#suggestions-section');
+  const list = element<HTMLElement>('#suggestions-list');
+  const depth = element<HTMLElement>('#answer-depth');
+  list.replaceChildren();
+  depth.textContent = metadata.plan.depth === 'aprofundado'
+    ? 'Resposta aprofundada'
+    : metadata.plan.depth === 'resumido' ? 'Resposta resumida' : 'Resposta explicativa';
+  depth.hidden = false;
+  const options = metadata.suggestions.map((label) => ({ label, query: `Explique ${label}.` }));
+  if (metadata.continuation_query) {
+    options.unshift({ label: 'Continuar esta explicação', query: metadata.continuation_query });
+  }
+  for (const option of options.slice(0, 5)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'suggestion-button';
+    button.textContent = option.label;
+    button.addEventListener('click', () => void runQuestion(option.query));
+    list.append(button);
+  }
+  section.hidden = options.length === 0;
 }
 
 function handleAskEvent(event: AskEvent): void {
@@ -191,23 +217,26 @@ function handleAskEvent(event: AskEvent): void {
     currentAnswer = event.texto;
     element('#answer-text').textContent = currentAnswer;
   }
+  if (event.tipo === 'metadados') renderSuggestions(event);
   if (event.tipo === 'erro') throw new Error(event.mensagem);
 }
 
-questionForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
+async function runQuestion(question: string): Promise<void> {
   if (busy || !connected) return;
-  currentQuestion = element<HTMLTextAreaElement>('#question').value.trim();
+  currentQuestion = question.trim();
   if (!currentQuestion) return;
+  element<HTMLTextAreaElement>('#question').value = currentQuestion;
   busy = true;
   currentAnswer = '';
   const button = element<HTMLButtonElement>('#ask-button');
   button.disabled = true;
   element('#result-panel').hidden = true;
+  element('#suggestions-section').hidden = true;
+  element('#answer-depth').hidden = true;
   element('#answer-loading').hidden = false;
   setServerUnavailable(false);
   try {
-    await api.askStream(currentQuestion, currentLanguage, handleAskEvent);
+    await api.askStream(currentQuestion, currentLanguage, currentProfile, handleAskEvent);
     if (!currentAnswer) throw new Error('O servidor encerrou a resposta antes de enviar o texto.');
     element('#answer-title').textContent = currentQuestion;
     element('#result-panel').hidden = false;
@@ -220,6 +249,11 @@ questionForm.addEventListener('submit', async (event) => {
     button.disabled = false;
     busy = false;
   }
+}
+
+questionForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  await runQuestion(element<HTMLTextAreaElement>('#question').value);
 });
 
 element('#share-answer').addEventListener('click', async () => {
@@ -276,6 +310,13 @@ languageSelect.addEventListener('change', () => {
   showToast(`As próximas respostas e apresentações serão geradas em ${label}.`);
 });
 
+profileSelect.value = currentProfile;
+profileSelect.addEventListener('change', () => {
+  currentProfile = profileSelect.value;
+  localStorage.setItem('magisteria-profile', currentProfile);
+  showToast('O nível de linguagem foi atualizado para as próximas respostas.');
+});
+
 element('#database-button').addEventListener('click', async () => {
   const summary = element('#database-summary');
   const list = element<HTMLUListElement>('#database-list');
@@ -294,6 +335,101 @@ element('#database-button').addEventListener('click', async () => {
     }
   } catch (error) {
     summary.textContent = friendlyError(error);
+  }
+});
+
+let historySearchTimer = 0;
+
+function historyDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(currentLanguage, { dateStyle: 'short', timeStyle: 'short' }).format(date);
+}
+
+function historyButton(text: string, className: string): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = className;
+  button.textContent = text;
+  return button;
+}
+
+function renderHistory(items: SearchHistoryItem[]): void {
+  const list = element<HTMLElement>('#history-list');
+  list.replaceChildren();
+  element('#history-status').textContent = items.length
+    ? `${items.length} tema(s) no seu histórico privado.`
+    : 'Nenhuma consulta encontrada.';
+  for (const item of items) {
+    const card = document.createElement('article');
+    card.className = 'record-card';
+    const title = document.createElement('strong');
+    title.textContent = item.display_title;
+    const detail = document.createElement('small');
+    const repeated = item.repeated ? ` · consultado ${item.search_count} vezes` : '';
+    detail.textContent = `${item.depth_level} · ${historyDate(item.last_searched_at)}${repeated}`;
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+    const reopen = historyButton('Refazer pesquisa', 'secondary-button');
+    reopen.addEventListener('click', async () => {
+      reopen.disabled = true;
+      try {
+        const saved = await api.historyQuery(item.id);
+        element<HTMLDialogElement>('#history-dialog').close();
+        await runQuestion(saved.query);
+      } catch (error) {
+        element('#history-status').textContent = friendlyError(error);
+      } finally {
+        reopen.disabled = false;
+      }
+    });
+    const remove = historyButton('Excluir', 'danger-button');
+    remove.addEventListener('click', async () => {
+      remove.disabled = true;
+      try {
+        await api.deleteHistoryItem(item.id);
+        await loadHistory();
+      } catch (error) {
+        element('#history-status').textContent = friendlyError(error);
+      }
+    });
+    actions.append(reopen, remove);
+    card.append(title, detail, actions);
+    list.append(card);
+  }
+}
+
+async function loadHistory(): Promise<void> {
+  const status = element('#history-status');
+  status.textContent = 'Consultando seu histórico…';
+  try {
+    const search = element<HTMLInputElement>('#history-search').value.trim();
+    const sort = element<HTMLSelectElement>('#history-sort').value as 'date' | 'frequency';
+    renderHistory(await api.searchHistory(search, sort));
+  } catch (error) {
+    status.textContent = friendlyError(error);
+  }
+}
+
+element('#history-button').addEventListener('click', async () => {
+  openDialog('#history-dialog');
+  await loadHistory();
+});
+
+element<HTMLInputElement>('#history-search').addEventListener('input', () => {
+  window.clearTimeout(historySearchTimer);
+  historySearchTimer = window.setTimeout(() => void loadHistory(), 250);
+});
+element<HTMLSelectElement>('#history-sort').addEventListener('change', () => void loadHistory());
+element('#clear-history').addEventListener('click', async () => {
+  if (!window.confirm('Limpar todo o seu histórico de consultas?')) return;
+  try {
+    await api.clearHistory();
+    await loadHistory();
+    showToast('Histórico limpo.');
+  } catch (error) {
+    element('#history-status').textContent = friendlyError(error);
   }
 });
 
