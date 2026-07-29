@@ -11,6 +11,21 @@
 - Produção bloqueada até concluir a configuração, publicar um teste fechado e manter pelo menos 12 participantes por 14 dias.
 - Estado em 27/07/2026: 5 de 11 tarefas de conteúdo concluídas. Foram salvas a política de privacidade e as declarações de anúncios, app governamental, recursos financeiros e saúde. Categoria `Educação`, e-mail e site de suporte também foram cadastrados.
 
+## Monetização adiada durante o teste fechado
+
+Decisão de 29/07/2026: publicar o build `0.8.1 (801)` com as correções funcionais e manter a assinatura Google Play indisponível até a conclusão do período de testes. O aplicativo continua gratuito para baixar; resgate de cupom permanece disponível. Não inserir link de pagamento Asaas no aplicativo Android.
+
+Caminho a retomar no Play Console depois dos testes:
+
+1. `MAGISTERIA` → `Monetizar com o Google Play` → `Produtos` → `Assinaturas`.
+2. Criar o produto `magisteria_completa`, com nome `MAGISTERIA Completa`.
+3. Criar o plano base auto-renovável `mensal`, período mensal, disponível no Brasil por `R$ 14,99`.
+4. Ativar o produto e o plano base.
+5. Configurar uma conta de serviço da Android Publisher API, conceder somente as permissões necessárias ao MAGISTERIA e armazenar a credencial exclusivamente no Railway como `GOOGLE_SERVICE_ACCOUNT_CREDENTIALS`.
+6. Definir no Railway `GOOGLE_PLAY_PRODUCT_ID=magisteria_completa` e `GOOGLE_PLAY_PACKAGE_NAME=br.com.aloysiotelles.magisteria`, publicar e validar compra, restauração, renovação, cancelamento e resgate de cupom na faixa de teste.
+
+O menu `Configurações de pagamento` administra o perfil financeiro do desenvolvedor e não substitui a criação do produto de assinatura dentro do aplicativo.
+
 ## Decisões e bloqueios registrados em 27/07/2026
 
 - O proprietário declarou que o aplicativo não é infantil. Antes de enviar o formulário de público-alvo, confirmar se a seleção será exclusivamente 18 anos ou mais; essa é a recomendação técnica atual.
@@ -54,7 +69,7 @@ O AAB assinado será produzido em `android/app/build/outputs/bundle/release/`. N
 - Publicador: Aloysio Telles de Moraes Netto (conta pessoal).
 - E-mail público de suporte: `aplicativo.magisteria@gmail.com`.
 - URLs públicas validadas: `https://magisteria-production.up.railway.app/privacy`, `/terms`, `/support` e `/account-deletion`.
-- Confirmar `versionName=0.8.0` e incrementar `versionCode` acima de 800 a cada upload.
+- Build corretivo atual: `versionName=0.8.1`, `versionCode=801`; incrementar o `versionCode` em cada upload posterior.
 - Criar upload key offline e ativar Play App Signing.
 - Configurar secrets somente no GitHub Environment protegido se build assinado for automatizado.
 
