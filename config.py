@@ -72,7 +72,12 @@ class Settings:
     MERCADO_PAGO_WEBHOOK_SECRET = os.getenv("MERCADO_PAGO_WEBHOOK_SECRET", "").strip()
     MERCADO_PAGO_PRICE = _decimal_env("MERCADO_PAGO_PRICE")
     MERCADO_PAGO_CURRENCY = os.getenv("MERCADO_PAGO_CURRENCY", "BRL").strip().upper()
-    GOOGLE_PLAY_PRODUCT_ID = os.getenv("GOOGLE_PLAY_PRODUCT_ID", "").strip()
+    GOOGLE_PLAY_PACKAGE_NAME = os.getenv(
+        "GOOGLE_PLAY_PACKAGE_NAME", "br.com.aloysiotelles.magisteria"
+    ).strip()
+    GOOGLE_PLAY_PRODUCT_ID = os.getenv(
+        "GOOGLE_PLAY_PRODUCT_ID", "magisteria_completa"
+    ).strip()
     APPLE_PRODUCT_ID = os.getenv("APPLE_PRODUCT_ID", "").strip()
     APPLE_SHARED_SECRET = os.getenv("APPLE_SHARED_SECRET", "").strip()
     GOOGLE_SERVICE_ACCOUNT_CREDENTIALS = os.getenv("GOOGLE_SERVICE_ACCOUNT_CREDENTIALS", "").strip()

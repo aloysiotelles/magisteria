@@ -15,7 +15,7 @@ from docx.shared import Inches, Pt, RGBColor
 import httpx
 from openai import AsyncOpenAI
 from openai import APIConnectionError, APIStatusError, RateLimitError
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from services.editorial_style import PRESENTATION_WRITING_STANDARD
 from services.localization import localized_writing_standard, normalize_language, presentation_language_instruction
@@ -23,6 +23,7 @@ from services.localization import localized_writing_standard, normalize_language
 
 MIN_PRESENTATION_TOPICS = 10
 MAX_PRESENTATION_TOPICS = 14
+IMAGE_GENERATION_TIMEOUT_SECONDS = 50
 logger = logging.getLogger(__name__)
 
 
@@ -149,51 +150,65 @@ class PresentationService:
             "es": "Un mensaje acogido con fe transforma la vida y renueva la esperanza.",
         }[normalize_language(language)]
         closing_phrase = closing_phrase or default_closing
+        cover_topic = {
+            "titulo": short_title,
+            "sintese": title,
+            "visual_role": "cover",
+            "visual_index": 1,
+            "visual_total": len(topics) + 2,
+            "visual_signature": self._visual_signature(1),
+            "title_context": title,
+        }
+        closing_topic = {
+            "titulo": "Encerramento",
+            "sintese": closing_phrase,
+            "visual_role": "closing",
+            "visual_index": len(topics) + 2,
+            "visual_total": len(topics) + 2,
+            "visual_signature": self._visual_signature(len(topics) + 2),
+            "title_context": title,
+        }
         cover, closing = await asyncio.gather(
-            self._generate_image_with_retry(
-                title,
-                {
-                    "titulo": short_title,
-                    "sintese": title,
-                    "visual_role": "cover",
-                    "visual_index": 1,
-                    "visual_total": len(topics) + 2,
-                    "visual_signature": self._visual_signature(1),
-                },
-                attempts=2,
-            ),
-            self._generate_image_with_retry(
-                title,
-                {
-                    "titulo": "Encerramento",
-                    "sintese": closing_phrase,
-                    "visual_role": "closing",
-                    "visual_index": len(topics) + 2,
-                    "visual_total": len(topics) + 2,
-                    "visual_signature": self._visual_signature(len(topics) + 2),
-                },
-                attempts=2,
-            ),
+            self._generate_image_bounded(title, cover_topic),
+            self._generate_image_bounded(title, closing_topic),
         )
         prs = Presentation()
         prs.slide_width, prs.slide_height = PptInches(13.333), PptInches(7.5)
         self._add_title_slide(prs, short_title, cover)
-        for number, topic in enumerate(topics, 1):
-            image = await asyncio.to_thread(
-                self._fallback_image,
-                {
-                    **topic,
-                    "visual_index": number + 1,
-                    "visual_total": len(topics) + 2,
-                    "visual_signature": self._visual_signature(number + 1),
-                    "title_context": title,
-                },
-            )
+        illustrated_topics = [
+            {
+                **topic,
+                "visual_index": number + 1,
+                "visual_total": len(topics) + 2,
+                "visual_signature": self._visual_signature(number + 1),
+                "title_context": title,
+            }
+            for number, topic in enumerate(topics, 1)
+        ]
+        topic_images = await asyncio.gather(
+            *(asyncio.to_thread(self._fallback_image, topic) for topic in illustrated_topics)
+        )
+        for number, (topic, image) in enumerate(zip(topics, topic_images), 1):
             self._add_topic_slide(prs, number, topic, image)
         self._add_closing_slide(prs, closing_phrase, closing)
         output = BytesIO()
         prs.save(output)
         return output.getvalue()
+
+    async def _generate_image_bounded(self, title: str, topic: dict) -> BytesIO:
+        """Keep presentation downloads bounded even when the image provider stalls."""
+        try:
+            return await asyncio.wait_for(
+                self._generate_image_with_retry(title, topic, attempts=2),
+                timeout=IMAGE_GENERATION_TIMEOUT_SECONDS,
+            )
+        except (asyncio.TimeoutError, RuntimeError, APIStatusError) as exc:
+            logger.warning(
+                "Imagem %s indisponível; usando arte local para concluir os slides: %s",
+                topic.get("visual_role", "topic"),
+                exc,
+            )
+            return await asyncio.to_thread(self._fallback_image, topic)
 
     def _visual_brief(self, title: str, topics: list[dict], short_title: str, closing_phrase: str) -> list[dict]:
         total = len(topics) + 2
@@ -319,20 +334,30 @@ class PresentationService:
             ((47, 39, 22), (154, 127, 59), (248, 238, 214)),
         ]
         dark, mid, light = palettes[digest[0] % len(palettes)]
-        image = Image.new("RGB", (1024, 1024), dark)
-        pixels = image.load()
-        shift_x = 280 + (digest[1] % 180)
-        shift_y = 240 + (digest[2] % 180)
-        radius = 560 + (digest[3] % 160)
+        # Build the background with Pillow primitives. The former Python loop touched
+        # more than one million pixels per slide and dominated Railway response time.
+        gradient = Image.new("RGB", (1, 1024))
+        gradient_pixels = gradient.load()
         for y in range(1024):
             ratio = y / 1023
-            base = tuple(int(dark[channel] * (1 - ratio) + mid[channel] * ratio) for channel in range(3))
-            for x in range(1024):
-                glow = max(0, 1 - (((x - (1024 - shift_x)) ** 2 + (y - shift_y) ** 2) ** 0.5 / radius))
-                pixels[x, y] = tuple(
-                    min(255, int(base[channel] * (1 - glow * 0.5) + light[channel] * glow * 0.5))
-                    for channel in range(3)
-                )
+            gradient_pixels[0, y] = tuple(
+                int(dark[channel] * (1 - ratio) + mid[channel] * ratio)
+                for channel in range(3)
+            )
+        image = gradient.resize((1024, 1024))
+
+        glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow, "RGBA")
+        shift_x = 280 + (digest[1] % 180)
+        shift_y = 240 + (digest[2] % 180)
+        radius = 420 + (digest[3] % 140)
+        center_x = 1024 - shift_x
+        glow_draw.ellipse(
+            (center_x - radius, shift_y - radius, center_x + radius, shift_y + radius),
+            fill=(*light, 132),
+        )
+        glow = glow.filter(ImageFilter.GaussianBlur(radius / 2.6))
+        image = Image.alpha_composite(image.convert("RGBA"), glow).convert("RGB")
         draw = ImageDraw.Draw(image, "RGBA")
         for offset in range(0, 1024, 96):
             alpha = 28 + ((offset + digest[4]) % 54)

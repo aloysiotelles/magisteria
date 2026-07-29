@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#173f2a" />
+    <meta name="theme-color" content="#f3efe7" />
     <meta name="color-scheme" content="light" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://magisteria-production.up.railway.app http://127.0.0.1:8000; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'none'" />
     <title>MAGISTERIA</title>
@@ -27,8 +27,9 @@
       <section id="auth-view" class="auth-view" hidden>
         <div class="brand-block">
           <img src="/logo-magisteria.png" class="brand-logo" alt="Logo MAGISTERIA" />
-          <p class="eyebrow">Pesquisa pastoral confiável</p>
-          <h1>Gaste tempo evangelizando,<br /><span>não pesquisando.</span></h1>
+          <p class="eyebrow">Sabedoria da tradição · precisão da tecnologia</p>
+          <h1>MAGISTER<span>IA</span></h1>
+          <p class="subtitle">Pesquisa pastoral com curadoria das fontes.</p>
         </div>
         <form id="auth-form" class="panel" novalidate>
           <h2 id="auth-title">Entrar</h2>
@@ -47,22 +48,54 @@
       </section>
 
       <section id="main-view" hidden>
-        <header class="app-header">
-          <div>
-            <p class="eyebrow">MAGISTERIA</p>
-            <h1 id="welcome-title">Olá</h1>
+        <nav class="utility-nav" aria-label="Menu principal">
+          <span id="user-chip" class="user-chip">Usuário</span>
+          <label class="language-picker" for="language-select">
+            <span>Idioma</span>
+            <select id="language-select" aria-label="Idioma da resposta">
+              <option value="pt-BR">Português</option>
+              <option value="en">English</option>
+              <option value="es">Español</option>
+            </select>
+          </label>
+          <div id="admin-menu" class="admin-menu" hidden>
+            <button id="stats-button" class="utility-button" type="button">Estatísticas</button>
+            <button id="coupons-button" class="utility-button" type="button">Cupons</button>
+            <button id="admin-documents-button" class="utility-button" type="button">Base documental</button>
+            <button id="rag-button" class="utility-button" type="button">Diagnóstico RAG</button>
           </div>
-          <button id="profile-button" class="icon-button" type="button" aria-label="Abrir perfil">Perfil</button>
+          <button id="database-button" class="utility-button" type="button">Base de dados</button>
+          <button id="subscription-button" class="utility-button" type="button">Assinatura</button>
+          <button id="change-password-button" class="utility-button" type="button">Alterar senha</button>
+          <button id="about-button" class="utility-button" type="button">Sobre</button>
+          <button id="account-button" class="utility-button" type="button">Conta</button>
+          <button id="logout-button" class="utility-button" type="button">Sair</button>
+        </nav>
+
+        <header class="web-hero">
+          <img src="/logo-magisteria.png" class="hero-logo" alt="Logo MAGISTERIA" />
+          <div class="identity">
+            <p class="eyebrow">Sabedoria da tradição · precisão da tecnologia</p>
+            <h1>MAGISTER<span>IA</span></h1>
+            <p class="subtitle">Pesquisa pastoral com curadoria das fontes.</p>
+            <p class="slogan">PESQUISA CATÓLICA COM CURADORIA — Gaste seu tempo <strong>EVANGELIZANDO</strong>, não pesquisando!</p>
+          </div>
         </header>
 
-        <section class="hero-card">
-          <p class="eyebrow">Base documental compartilhada</p>
-          <h2>O que você deseja aprofundar hoje?</h2>
+        <section class="search-card" aria-labelledby="search-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Biblioteca documental fechada</p>
+              <h2 id="search-title">O que você deseja pesquisar?</h2>
+            </div>
+            <span class="status-pill"><span class="status-dot"></span>Base disponível</span>
+          </div>
           <form id="question-form">
-            <label class="sr-only" for="question">Pergunta</label>
-            <textarea id="question" rows="4" minlength="1" maxlength="2000" placeholder="Ex.: Como explicar a esperança cristã em uma catequese?" required></textarea>
-            <button id="ask-button" class="primary-button" type="submit">Pesquisar e responder</button>
+            <label class="sr-only" for="question">Digite sua pergunta</label>
+            <textarea id="question" rows="4" minlength="1" maxlength="2000" placeholder="Ex.: O que os documentos ensinam sobre a dignidade da pessoa humana?" required></textarea>
+            <button id="ask-button" class="primary-button search-button" type="submit">⌕ Pesquisar</button>
           </form>
+          <p class="privacy-note">A pesquisa é feita exclusivamente nos documentos cadastrados. Nenhuma busca aberta na internet é realizada.</p>
         </section>
 
         <section id="answer-loading" class="panel loading-panel" hidden aria-live="polite">
@@ -70,39 +103,94 @@
           <div><strong>Consultando a base documental</strong><p>A resposta da IA pode levar alguns instantes.</p></div>
         </section>
 
-        <article id="answer-card" class="panel answer-card" hidden aria-live="polite">
-          <p class="eyebrow">Resposta fundamentada</p>
-          <h2 id="answer-title">Síntese</h2>
-          <div id="answer-text" class="answer-text"></div>
-          <div id="source-section" hidden>
-            <h3>Fontes consultadas</h3>
+        <section id="result-panel" class="result-grid" hidden>
+          <article id="answer-card" class="panel answer-card" aria-live="polite">
+            <div class="card-title"><span>✦</span><h2>Resposta</h2></div>
+            <h3 id="answer-title" class="answer-question">Síntese</h3>
+            <div id="answer-text" class="answer-text"></div>
+            <section class="presentation-module">
+              <p class="eyebrow">Roteiro e apresentação</p>
+              <h3>Transforme esta pesquisa em material para apresentar</h3>
+              <p>Escolha um roteiro editável ou slides ilustrados por IA.</p>
+              <div class="action-grid">
+                <button id="share-answer" type="button">Compartilhar</button>
+                <button id="create-script" type="button">Criar roteiro</button>
+                <button id="create-slides" type="button">Criar slides</button>
+              </div>
+              <div id="document-progress" class="document-progress" hidden aria-live="polite">
+                <div class="spinner"></div>
+                <div><strong id="document-progress-title">Preparando o arquivo</strong><p id="document-progress-detail">Mantenha o aplicativo aberto.</p></div>
+              </div>
+            </section>
+          </article>
+          <aside id="source-section" class="panel sources-card" hidden>
+            <div class="card-title"><span>⌘</span><h2>Fontes consultadas</h2></div>
             <ul id="source-list"></ul>
-          </div>
-          <div class="action-grid">
-            <button id="share-answer" type="button">Compartilhar</button>
-            <button id="create-script" type="button">Criar roteiro</button>
-            <button id="create-slides" type="button">Criar slides</button>
-          </div>
-        </article>
+          </aside>
+        </section>
+
+        <footer><span>✠</span> MAGISTERIA · Conteúdo fundamentado nas fontes cadastradas</footer>
       </section>
     </main>
 
-    <dialog id="profile-dialog">
-      <div class="dialog-header"><h2>Conta e privacidade</h2><button id="close-profile" type="button" aria-label="Fechar">×</button></div>
-      <p id="profile-summary"></p>
+    <dialog id="database-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Biblioteca documental</p><h2>Base de dados</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <p id="database-summary" class="modal-intro">Consultando documentos…</p>
+      <ul id="database-list" class="data-list"></ul>
+    </dialog>
+
+    <dialog id="subscription-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Plano e acesso</p><h2>Assinatura</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <p id="subscription-summary" class="modal-intro">Consultando sua assinatura…</p>
+      <div id="subscription-usage" class="subscription-box"></div>
+      <div class="subscription-box highlighted">
+        <h3>Acesso completo</h3>
+        <p>Tenha acesso ampliado às consultas, roteiros e apresentações.</p>
+        <p id="play-subscription-price" class="subscription-price" hidden></p>
+        <button id="play-subscription-button" class="primary-button" type="button" disabled>Assinar pelo Google Play</button>
+        <button id="restore-subscription-button" class="secondary-button" type="button" hidden>Restaurar compra</button>
+        <button id="manage-subscription-button" class="secondary-button" type="button" hidden>Gerenciar na Google Play</button>
+        <p id="play-subscription-status" class="privacy-note">Verificando a disponibilidade da assinatura…</p>
+      </div>
+      <form id="coupon-form" class="coupon-form">
+        <label for="coupon-input">Tenho um cupom</label>
+        <input id="coupon-input" maxlength="40" autocomplete="off" placeholder="Digite o código do cupom" />
+        <button id="coupon-submit" class="secondary-button" type="submit">Aplicar cupom</button>
+        <p id="coupon-status" class="modal-intro" aria-live="polite"></p>
+      </form>
+    </dialog>
+
+    <dialog id="password-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Segurança</p><h2>Alterar senha</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <form id="change-password-form">
+        <label for="current-password">Senha atual</label>
+        <input id="current-password" type="password" autocomplete="current-password" required />
+        <label for="new-password">Nova senha</label>
+        <input id="new-password" type="password" autocomplete="new-password" minlength="8" required />
+        <label for="confirm-password">Confirmar nova senha</label>
+        <input id="confirm-password" type="password" autocomplete="new-password" minlength="8" required />
+        <p class="privacy-note">Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número.</p>
+        <p id="change-password-status" class="modal-intro" aria-live="polite"></p>
+        <button id="change-password-submit" class="primary-button" type="submit">Salvar nova senha</button>
+      </form>
+    </dialog>
+
+    <dialog id="about-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Créditos</p><h2>Sobre</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <div class="about-content">
+        <img src="/logo-magisteria.png" alt="" class="about-logo" />
+        <p>Concebido e desenvolvido mediante IA (Codex OpenAI) por Aloysio Telles de Moraes Netto — aloysiotmn@hotmail.com — @aloysiotelles</p>
+      </div>
       <nav class="profile-links" aria-label="Informações legais">
         <button data-external="/privacy" type="button">Política de privacidade</button>
         <button data-external="/terms" type="button">Termos de uso</button>
         <button data-external="/support" type="button">Suporte</button>
       </nav>
-      <button id="logout-button" class="secondary-button" type="button">Sair deste dispositivo</button>
-      <section id="admin-upload" hidden>
-        <h3>Adicionar documento à base</h3>
-        <p>PDF, DOCX, TXT ou Markdown. O envio ocorre em partes e a indexação permanece uma ação administrativa separada.</p>
-        <input id="document-file" type="file" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" />
-        <button id="upload-document" class="secondary-button" type="button">Enviar documento</button>
-        <progress id="upload-progress" value="0" max="100" hidden></progress>
-      </section>
+    </dialog>
+
+    <dialog id="account-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Conta e privacidade</p><h2>Minha conta</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <p id="profile-summary"></p>
       <details class="danger-zone">
         <summary>Excluir minha conta</summary>
         <p>A exclusão é permanente. Assinaturas da loja devem ser canceladas também na própria loja.</p>
@@ -112,6 +200,24 @@
         <input id="delete-confirmation" autocomplete="off" />
         <button id="delete-account" class="danger-button" type="button">Excluir conta permanentemente</button>
       </details>
+    </dialog>
+
+    <dialog id="admin-dialog" class="wide-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Administração</p><h2 id="admin-dialog-title">Administração</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <p id="admin-dialog-summary" class="modal-intro"></p>
+      <form id="admin-coupon-form" class="compact-form" hidden>
+        <input id="admin-coupon-code" maxlength="40" placeholder="Palavra do cupom" required />
+        <select id="admin-coupon-validity"><option value="dia">Um dia</option><option value="semana">Uma semana</option><option value="mes">Um mês</option></select>
+        <button class="primary-button" type="submit">Criar cupom</button>
+      </form>
+      <section id="admin-upload" hidden>
+        <h3>Adicionar documento à base</h3>
+        <input id="document-file" type="file" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" />
+        <button id="upload-document" class="secondary-button" type="button">Enviar documento</button>
+        <progress id="upload-progress" value="0" max="100" hidden></progress>
+        <button id="reindex-documents" class="secondary-button" type="button">Reindexar base</button>
+      </section>
+      <div id="admin-data-list" class="record-list"></div>
     </dialog>
 
     <div id="toast" class="toast" role="status" hidden></div>

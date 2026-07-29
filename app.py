@@ -38,8 +38,12 @@ from services.vector_store import LocalVectorStore
 from services.query_analysis import QueryType, analyze_query
 from services.rag_diagnostics import RAGDiagnosticsRepository, new_request_id, redact_query
 from services.subscription_service import SubscriptionService
+from services.google_play_billing_service import (
+    GooglePlayBillingError,
+    GooglePlayBillingService,
+)
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -84,6 +88,11 @@ asaas_service = AsaasService(
 subscription_service = SubscriptionService(
     settings.GOOGLE_PLAY_PRODUCT_ID,
     settings.APPLE_PRODUCT_ID,
+)
+google_play_billing_service = GooglePlayBillingService(
+    settings.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS,
+    settings.GOOGLE_PLAY_PACKAGE_NAME,
+    settings.GOOGLE_PLAY_PRODUCT_ID,
 )
 index_lock = asyncio.Lock()
 indexing_state = {
@@ -1024,6 +1033,15 @@ class AccountDeletionRequest(BaseModel):
     confirmation: str = Field(min_length=1, max_length=40)
 
 
+class GooglePlayPurchaseRequest(BaseModel):
+    product_id: str = Field(min_length=1, max_length=200)
+    purchase_token: str = Field(min_length=1, max_length=4096)
+
+
+class GooglePlaySyncRequest(BaseModel):
+    purchases: list[GooglePlayPurchaseRequest] = Field(default_factory=list, max_length=10)
+
+
 def mobile_user_payload(user: dict) -> dict:
     return {
         "id": user["id"],
@@ -1090,11 +1108,97 @@ async def mobile_me(request: Request):
 async def mobile_subscription(request: Request):
     user = current_user(request)
     order = await asyncio.to_thread(auth_repository.get_latest_payment_order, user["id"])
-    entitlement = subscription_service.snapshot(user, str(order["provider"] if order else ""))
+    store_subscription = await asyncio.to_thread(
+        auth_repository.get_store_subscription_for_user,
+        user["id"],
+        "google_play",
+    )
+    provider = "google_play" if store_subscription else str(order["provider"] if order else "")
+    entitlement = subscription_service.snapshot(user, provider)
     return {
         "entitlement": entitlement.to_dict(),
         "store_products_configured": subscription_service.store_products_configured,
+        "google_play": {
+            "available": google_play_billing_service.configured,
+            "package_name": settings.GOOGLE_PLAY_PACKAGE_NAME,
+            "product_id": settings.GOOGLE_PLAY_PRODUCT_ID,
+            "store_state": str(store_subscription["store_state"] if store_subscription else ""),
+        },
     }
+
+
+@app.post("/api/v1/mobile/subscription/coupon")
+async def mobile_redeem_coupon(payload: dict, request: Request):
+    user = current_user(request)
+    code = str(payload.get("coupon") or payload.get("cupom") or "").strip().upper()
+    if not code:
+        raise HTTPException(status_code=400, detail="Informe o cupom.")
+    try:
+        await asyncio.to_thread(auth_repository.redeem_coupon, user["id"], code)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    updated = await asyncio.to_thread(auth_repository.get_user, user["id"])
+    return {
+        "message": "Acesso completo liberado pelo cupom.",
+        "user": mobile_user_payload(dict(updated)),
+    }
+
+
+async def verify_google_play_purchase(user_id: int, purchase: GooglePlayPurchaseRequest) -> dict:
+    try:
+        verified = await google_play_billing_service.verify_subscription(
+            purchase.product_id,
+            purchase.purchase_token,
+        )
+        return await asyncio.to_thread(
+            auth_repository.apply_store_subscription,
+            user_id,
+            provider="google_play",
+            **verified.to_dict(),
+        )
+    except GooglePlayBillingError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/mobile/subscription/google/verify")
+async def mobile_verify_google_subscription(
+    payload: GooglePlayPurchaseRequest,
+    request: Request,
+):
+    user = current_user(request)
+    updated = await verify_google_play_purchase(user["id"], payload)
+    store = await asyncio.to_thread(
+        auth_repository.get_store_subscription_for_user,
+        user["id"],
+        "google_play",
+    )
+    return {
+        "message": (
+            "Assinatura confirmada. Seu acesso completo esta ativo."
+            if is_full_access(updated)
+            else "A compra ainda aguarda confirmacao do Google Play."
+        ),
+        "user": mobile_user_payload(updated),
+        "store": store,
+    }
+
+
+@app.post("/api/v1/mobile/subscription/google/sync")
+async def mobile_sync_google_subscription(payload: GooglePlaySyncRequest, request: Request):
+    user = current_user(request)
+    updated = dict(user)
+    if payload.purchases:
+        for purchase in payload.purchases:
+            updated = await verify_google_play_purchase(user["id"], purchase)
+    else:
+        updated = await asyncio.to_thread(
+            auth_repository.clear_store_entitlement,
+            user["id"],
+            "google_play",
+        )
+    return {"user": mobile_user_payload(updated)}
 
 
 @app.delete("/api/v1/mobile/account")

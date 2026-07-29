@@ -1490,6 +1490,28 @@ def test_slide_fallback_does_not_block_the_event_loop(monkeypatch):
     assert asyncio.run(scenario()) < 0.06
 
 
+def test_slide_image_timeout_finishes_with_local_art(monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+    import services.presentation_service as presentation_module
+
+    service = PresentationService("", "modelo")
+
+    async def stalled_image(*args, **kwargs):
+        await asyncio.sleep(0.2)
+
+    fallback = BytesIO()
+    Image.new("RGB", (64, 64), (30, 40, 50)).save(fallback, "JPEG")
+    fallback.seek(0)
+    monkeypatch.setattr(service, "_generate_image_with_retry", stalled_image)
+    monkeypatch.setattr(service, "_fallback_image", lambda topic: fallback)
+    monkeypatch.setattr(presentation_module, "IMAGE_GENERATION_TIMEOUT_SECONDS", 0.01)
+
+    result = asyncio.run(service._generate_image_bounded("Tema", {"visual_role": "cover"}))
+
+    assert result is fallback
+
+
 def test_mobile_tokens_rotate_and_reuse_revokes_the_family(tmp_path: Path, monkeypatch):
     repository = AuthRepository(tmp_path / "mobile-auth.sqlite")
     monkeypatch.setattr(application, "auth_repository", repository)

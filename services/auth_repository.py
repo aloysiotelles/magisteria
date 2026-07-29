@@ -142,6 +142,24 @@ class AuthRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_user
                     ON coupon_redemptions(user_id, revoked_at);
+                CREATE TABLE IF NOT EXISTS store_subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider TEXT NOT NULL,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    product_id TEXT NOT NULL,
+                    purchase_token TEXT NOT NULL,
+                    purchase_token_hash TEXT NOT NULL UNIQUE,
+                    store_state TEXT NOT NULL,
+                    is_entitled INTEGER NOT NULL DEFAULT 0,
+                    acknowledged INTEGER NOT NULL DEFAULT 0,
+                    is_test_purchase INTEGER NOT NULL DEFAULT 0,
+                    started_at TEXT,
+                    expires_at TEXT,
+                    last_verified_at TEXT NOT NULL,
+                    UNIQUE(provider, purchase_token)
+                );
+                CREATE INDEX IF NOT EXISTS idx_store_subscriptions_user
+                    ON store_subscriptions(user_id, provider, last_verified_at DESC);
             """)
             columns = {row["name"] for row in db.execute("PRAGMA table_info(payment_orders)").fetchall()}
             if "provider" not in columns:
@@ -568,6 +586,150 @@ class AuthRepository:
             started_at=now,
             renews_at=None,
         )
+
+    def apply_store_subscription(
+        self,
+        user_id: int,
+        *,
+        provider: str,
+        product_id: str,
+        purchase_token: str,
+        store_state: str,
+        is_entitled: bool,
+        acknowledged: bool,
+        started_at: str | None,
+        expires_at: str | None,
+        is_test_purchase: bool = False,
+    ) -> dict:
+        """Bind a verified store purchase to one MAGISTERIA account and update access."""
+        provider = provider.strip().lower()
+        product_id = product_id.strip()
+        purchase_token = purchase_token.strip()
+        if provider not in {"google_play", "apple"}:
+            raise ValueError("Loja de assinatura invalida.")
+        if not product_id or not purchase_token:
+            raise ValueError("Comprovante de assinatura incompleto.")
+        now = self._now()
+        token_hash = hashlib.sha256(purchase_token.encode("utf-8")).hexdigest()
+        provider_reference = f"{provider}:{token_hash}"
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT user_id FROM store_subscriptions WHERE purchase_token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if existing and int(existing["user_id"]) != int(user_id):
+                raise ValueError("Esta compra ja esta vinculada a outra conta do MAGISTERIA.")
+            db.execute(
+                """
+                INSERT INTO store_subscriptions(
+                    provider, user_id, product_id, purchase_token, purchase_token_hash,
+                    store_state, is_entitled, acknowledged, is_test_purchase,
+                    started_at, expires_at, last_verified_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(purchase_token_hash) DO UPDATE SET
+                    product_id = excluded.product_id,
+                    store_state = excluded.store_state,
+                    is_entitled = excluded.is_entitled,
+                    acknowledged = excluded.acknowledged,
+                    is_test_purchase = excluded.is_test_purchase,
+                    started_at = COALESCE(excluded.started_at, store_subscriptions.started_at),
+                    expires_at = excluded.expires_at,
+                    last_verified_at = excluded.last_verified_at
+                """,
+                (
+                    provider,
+                    user_id,
+                    product_id,
+                    purchase_token,
+                    token_hash,
+                    store_state[:60],
+                    1 if is_entitled else 0,
+                    1 if acknowledged else 0,
+                    1 if is_test_purchase else 0,
+                    started_at,
+                    expires_at,
+                    now,
+                ),
+            )
+            if is_entitled:
+                db.execute(
+                    """
+                    UPDATE users
+                    SET account_type = 'completa', subscription_status = 'ativa',
+                        payment_provider_subscription_id = ?,
+                        subscription_started_at = COALESCE(subscription_started_at, ?, ?),
+                        subscription_renews_at = ?
+                    WHERE id = ?
+                    """,
+                    (provider_reference, started_at, now, expires_at, user_id),
+                )
+            else:
+                status = {
+                    "pending": "pendente",
+                    "paused": "pausada",
+                    "on_hold": "suspensa",
+                    "canceled": "cancelada",
+                    "expired": "vencida",
+                    "pending_canceled": "cancelada",
+                }.get(store_state, "inativa")
+                db.execute(
+                    """
+                    UPDATE users
+                    SET account_type = 'gratuita', subscription_status = ?,
+                        subscription_renews_at = NULL
+                    WHERE id = ? AND payment_provider_subscription_id = ?
+                    """,
+                    (status, user_id, provider_reference),
+                )
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            raise ValueError("Usuario nao encontrado.")
+        return dict(user)
+
+    def clear_store_entitlement(self, user_id: int, provider: str) -> dict:
+        """Remove only access that came from a store when that store reports no owned plan."""
+        provider = provider.strip().lower()
+        if provider not in {"google_play", "apple"}:
+            raise ValueError("Loja de assinatura invalida.")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                """
+                UPDATE store_subscriptions
+                SET is_entitled = 0, store_state = 'expired', last_verified_at = ?
+                WHERE user_id = ? AND provider = ? AND is_entitled = 1
+                """,
+                (self._now(), user_id, provider),
+            )
+            db.execute(
+                """
+                UPDATE users
+                SET account_type = 'gratuita', subscription_status = 'vencida',
+                    payment_provider_subscription_id = NULL,
+                    subscription_renews_at = NULL
+                WHERE id = ? AND payment_provider_subscription_id LIKE ?
+                """,
+                (user_id, f"{provider}:%"),
+            )
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            raise ValueError("Usuario nao encontrado.")
+        return dict(user)
+
+    def get_store_subscription_for_user(self, user_id: int, provider: str) -> dict | None:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT provider, product_id, store_state, is_entitled, acknowledged,
+                       is_test_purchase, started_at, expires_at, last_verified_at
+                FROM store_subscriptions
+                WHERE user_id = ? AND provider = ?
+                ORDER BY last_verified_at DESC LIMIT 1
+                """,
+                (user_id, provider.strip().lower()),
+            ).fetchone()
+        return dict(row) if row else None
 
     def apply_coupon_access(self, user_id: int, coupon_code: str) -> None:
         now = self._now()

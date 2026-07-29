@@ -18,9 +18,12 @@ export const API_BASE_URL = validateApiBaseUrl(
   import.meta.env.PROD,
 );
 
-export const API_TIMEOUT_MS = 25_000;
+export const API_TIMEOUT_MS = 45_000;
+export const ASK_TIMEOUT_MS = 120_000;
+export const DOCUMENT_TIMEOUT_MS = 240_000;
 export const ALLOWED_EXTERNAL_HOSTS = new Set([
   new URL(API_BASE_URL).hostname,
   'developer.apple.com',
+  'play.google.com',
   'support.google.com',
 ]);
