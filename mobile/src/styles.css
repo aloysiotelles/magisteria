@@ -73,6 +73,18 @@ label { display: block; margin: .8rem 0 .35rem; font-weight: 700; }
 .card-title h2 { margin: 0; color: var(--forest); font-family: Georgia, serif; }
 .answer-question { color: var(--forest); font-size: 1rem; }
 .answer-text { white-space: pre-wrap; line-height: 1.68; }
+.opening-disclaimer p { color: var(--muted); line-height: 1.6; }
+.opening-disclaimer strong { color: var(--forest); }
+.search-preferences { display: flex; align-items: center; gap: .65rem; margin-top: .7rem; color: var(--muted); font-size: .88rem; }
+.search-preferences select { min-width: min(100%, 230px); padding-block: .55rem; }
+.depth-badge { display: inline-flex; margin: 0 0 .8rem; padding: .28rem .65rem; border-radius: 999px; background: #f4ead2; color: #76520d; font-size: .78rem; font-weight: 800; }
+.suggestions-section { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.suggestions-list { display: flex; flex-wrap: wrap; gap: .55rem; }
+.suggestion-button { width: auto; border: 1px solid #cdbf9f; border-radius: 999px; padding: .52rem .78rem; color: var(--forest); background: #fffaf0; font-weight: 700; }
+.history-controls { display: grid; grid-template-columns: auto minmax(140px, 1fr) auto minmax(140px, .6fr); gap: .55rem; align-items: center; margin-bottom: .8rem; }
+.history-controls .danger-button { grid-column: 1 / -1; justify-self: end; width: auto; margin-top: 0; }
+.history-actions { display: grid; grid-template-columns: 1fr auto; gap: .5rem; margin-top: .65rem; }
+.history-actions button { width: auto; margin: 0; }
 .sources-card ul { margin: 0; padding: 0; list-style: none; }
 .sources-card li { margin-bottom: .65rem; padding: .7rem .8rem; border-left: 3px solid var(--gold); border-radius: 0 8px 8px 0; color: #5e554c; background: #f7f3e8; overflow-wrap: anywhere; }
 .presentation-module { margin-top: 1.5rem; padding-top: 1.35rem; border-top: 1px solid rgba(139, 94, 52, .24); }
@@ -134,6 +146,9 @@ dialog::backdrop { background: #10201999; backdrop-filter: blur(3px); }
   .search-button { width: 100%; }
   .about-content { align-items: flex-start; flex-direction: column; }
   .utility-button { font-size: .72rem; }
+  .search-preferences { align-items: stretch; flex-direction: column; }
+  .history-controls { grid-template-columns: 1fr; }
+  .history-controls .danger-button { grid-column: auto; width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

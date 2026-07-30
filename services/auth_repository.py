@@ -9,6 +9,8 @@ import re
 import secrets
 import sqlite3
 
+from services.migrations import apply_migrations
+
 SESSION_DAYS = 30
 MOBILE_ACCESS_MINUTES = 15
 MOBILE_REFRESH_DAYS = 30
@@ -63,6 +65,15 @@ class AuthRepository:
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user
+                    ON password_reset_tokens(user_id, expires_at);
                 CREATE TABLE IF NOT EXISTS mobile_tokens (
                     token_hash TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -166,6 +177,7 @@ class AuthRepository:
                 db.execute(
                     "ALTER TABLE payment_orders ADD COLUMN provider TEXT NOT NULL DEFAULT 'mercado_pago'"
                 )
+            apply_migrations(db, Path(__file__).resolve().parents[1] / "migrations")
         self.ensure_admin(self.admin_bootstrap_password)
 
     def ensure_admin(self, bootstrap_password: str = "") -> None:
@@ -907,6 +919,85 @@ class AuthRepository:
             db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             db.execute("UPDATE mobile_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (self._now(), user_id))
         return True, "Senha alterada com sucesso."
+
+    def issue_password_reset_token(
+        self,
+        email: str,
+        ttl_minutes: int = 30,
+    ) -> tuple[str, dict] | None:
+        """Emite um token de uso único sem revelar se o email existe ao chamador HTTP."""
+        email = email.strip()
+        now = datetime.now(timezone.utc)
+        token = secrets.token_urlsafe(32)
+        with self._connect() as db:
+            user = db.execute(
+                "SELECT * FROM users WHERE email = ? COLLATE NOCASE",
+                (email,),
+            ).fetchone()
+            if not user or "@" not in str(user["email"]):
+                return None
+            db.execute(
+                "DELETE FROM password_reset_tokens WHERE user_id = ? OR expires_at <= ?",
+                (user["id"], now.isoformat()),
+            )
+            db.execute(
+                """INSERT INTO password_reset_tokens(token_hash,user_id,created_at,expires_at)
+                   VALUES(?,?,?,?)""",
+                (
+                    self._token_hash(token),
+                    user["id"],
+                    now.isoformat(),
+                    (now + timedelta(minutes=max(5, ttl_minutes))).isoformat(),
+                ),
+            )
+        return token, dict(user)
+
+    def discard_password_reset_token(self, token: str) -> None:
+        if not token:
+            return
+        with self._connect() as db:
+            db.execute(
+                "DELETE FROM password_reset_tokens WHERE token_hash = ?",
+                (self._token_hash(token.strip()),),
+            )
+
+    def reset_password_with_token(self, token: str, new_password: str) -> tuple[bool, str]:
+        valid, message = self.validate_password_strength(new_password)
+        if not valid:
+            return False, message
+        cleaned_token = token.strip()
+        if len(cleaned_token) < 20:
+            return False, "Este link e invalido ou expirou. Solicite um novo link."
+        token_hash = self._token_hash(cleaned_token)
+        now = self._now()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT user_id FROM password_reset_tokens
+                   WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?""",
+                (token_hash, now),
+            ).fetchone()
+            if not row:
+                return False, "Este link e invalido ou expirou. Solicite um novo link."
+            user_id = int(row["user_id"])
+            db.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (self.hash_password(new_password), user_id),
+            )
+            db.execute(
+                "UPDATE password_reset_tokens SET used_at = ? WHERE token_hash = ?",
+                (now, token_hash),
+            )
+            db.execute(
+                "DELETE FROM password_reset_tokens WHERE user_id = ? AND token_hash <> ?",
+                (user_id, token_hash),
+            )
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            db.execute(
+                "UPDATE mobile_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+                (now, user_id),
+            )
+        return True, "Senha redefinida com sucesso. Entre novamente."
 
     def find_user_by_login(self, login: str) -> sqlite3.Row | None:
         login = login.strip()

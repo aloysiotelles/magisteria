@@ -62,10 +62,18 @@ jobs:
           chmod +x android/gradlew
           ./android/gradlew -p android clean bundleRelease
           test -f android/app/build/outputs/bundle/release/app-release.aab
+          # Modern Android bundles can trigger legacy JarInputStream warnings in
+          # jarsigner even when the JAR signature is valid. Verify the signature
+          # without promoting those compatibility warnings to exit code 4.
+          jarsigner -verify android/app/build/outputs/bundle/release/app-release.aab
+          sha256sum android/app/build/outputs/bundle/release/app-release.aab > android/app/build/outputs/bundle/release/app-release.aab.sha256
       - name: Publish signed AAB artifact
         uses: actions/upload-artifact@v4
         with:
-          name: magisteria-android-v0.8.1-build801
-          path: android/app/build/outputs/bundle/release/app-release.aab
+          name: magisteria-android-v0.9.1-build901
+          path: |
+            android/app/build/outputs/bundle/release/app-release.aab
+            android/app/build/outputs/bundle/release/app-release.aab.sha256
+            android/app/build/outputs/mapping/release/mapping.txt
           if-no-files-found: error
           retention-days: 14

@@ -13,7 +13,7 @@ export async function initializeNative(onNetworkChange: (connected: boolean) => 
   await App.addListener('backButton', async ({ canGoBack }) => {
     const dialog = document.querySelector<HTMLDialogElement>('dialog[open]');
     if (dialog) {
-      dialog.close();
+      if (!dialog.hasAttribute('data-required-dialog')) dialog.close();
     } else if (canGoBack) {
       history.back();
     } else {

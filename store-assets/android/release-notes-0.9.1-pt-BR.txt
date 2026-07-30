@@ -1,0 +1,1 @@
+Respostas mais profundas e completas para listas doutrinais, bíblicas, litúrgicas e históricas, com verificação automática de todos os itens. Melhorias na busca e nas referências documentais. Nova opção “Esqueci minha senha” com link seguro por email. O aviso pastoral agora aparece somente ao abrir o aplicativo. Correções de estabilidade e segurança.

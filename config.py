@@ -32,6 +32,12 @@ class Settings:
     APP_NAME = "MAGISTERIA"
     APP_PASSWORD = os.getenv("APP_PASSWORD", "DIVINA")
     ADMIN_BOOTSTRAP_PASSWORD = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "").strip()
+    GMAIL_OAUTH_CLIENT_ID = os.getenv("GMAIL_OAUTH_CLIENT_ID", "").strip()
+    GMAIL_OAUTH_CLIENT_SECRET = os.getenv("GMAIL_OAUTH_CLIENT_SECRET", "").strip()
+    GMAIL_OAUTH_REFRESH_TOKEN = os.getenv("GMAIL_OAUTH_REFRESH_TOKEN", "").strip()
+    GMAIL_SENDER_EMAIL = os.getenv(
+        "GMAIL_SENDER_EMAIL", "aplicativo.magisteria@gmail.com"
+    ).strip()
     DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", str(BASE_DIR / "Documentos"))).expanduser()
     VECTOR_DIR = Path(os.getenv("VECTOR_DIR", str(BASE_DIR / "banco_vetorial"))).expanduser()
     INDEX_FILE = VECTOR_DIR / "indice.json"
@@ -46,6 +52,13 @@ class Settings:
     MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.08"))
     RAG_DEBUG = os.getenv("RAG_DEBUG", "false").strip().lower() in {"1", "true", "yes", "sim"}
     RAG_DIAGNOSTIC_RETENTION_DAYS = int(os.getenv("RAG_DIAGNOSTIC_RETENTION_DAYS", "14"))
+    SEMANTIC_CACHE_TTL_SECONDS = int(os.getenv("SEMANTIC_CACHE_TTL_SECONDS", "86400"))
+    SEARCH_HISTORY_RETENTION_DAYS = int(os.getenv("SEARCH_HISTORY_RETENTION_DAYS", "365"))
+    STORE_ORIGINAL_SEARCH_QUERIES = os.getenv(
+        "STORE_ORIGINAL_SEARCH_QUERIES", "true"
+    ).strip().lower() in {"1", "true", "yes", "sim"}
+    OPENAI_INPUT_COST_PER_MILLION = float(os.getenv("OPENAI_INPUT_COST_PER_MILLION", "0"))
+    OPENAI_OUTPUT_COST_PER_MILLION = float(os.getenv("OPENAI_OUTPUT_COST_PER_MILLION", "0"))
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1100"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))
     APP_PUBLIC_URL = _public_url()

@@ -11,9 +11,17 @@
 - Produção bloqueada até concluir a configuração, publicar um teste fechado e manter pelo menos 12 participantes por 14 dias.
 - Estado em 27/07/2026: 5 de 11 tarefas de conteúdo concluídas. Foram salvas a política de privacidade e as declarações de anúncios, app governamental, recursos financeiros e saúde. Categoria `Educação`, e-mail e site de suporte também foram cadastrados.
 
+## Próxima versão de teste preparada
+
+- Versão: `0.9.1 (901)`.
+- Escopo: respostas compostas aprofundadas, recuperação em camadas, histórico privado, cache de evidências, perfis de linguagem e sugestões relacionadas.
+- Publicar primeiro o backend `0.9.1` no Railway e validar `/health`, `/app-version` e a recuperação de senha; somente depois disponibilizar o AAB aos testadores, pois o mecanismo de resposta é executado no servidor.
+- Notas pt-BR prontas em `store-assets/android/release-notes-0.9.1-pt-BR.txt`.
+- O workflow `Android signed release` produz AAB assinado, checksum SHA-256 e mapa de ofuscação quando os quatro segredos da upload key estiverem configurados no ambiente protegido `google-play`.
+
 ## Monetização adiada durante o teste fechado
 
-Decisão de 29/07/2026: publicar o build `0.8.1 (801)` com as correções funcionais e manter a assinatura Google Play indisponível até a conclusão do período de testes. O aplicativo continua gratuito para baixar; resgate de cupom permanece disponível. Não inserir link de pagamento Asaas no aplicativo Android.
+Decisão iniciada no build `0.8.1 (801)` e mantida no `0.9.0 (900)`: manter a assinatura Google Play indisponível até a conclusão do período de testes. O aplicativo continua gratuito para baixar; resgate de cupom permanece disponível. Não inserir link de pagamento Asaas no aplicativo Android.
 
 Caminho a retomar no Play Console depois dos testes:
 
@@ -69,7 +77,7 @@ O AAB assinado será produzido em `android/app/build/outputs/bundle/release/`. N
 - Publicador: Aloysio Telles de Moraes Netto (conta pessoal).
 - E-mail público de suporte: `aplicativo.magisteria@gmail.com`.
 - URLs públicas validadas: `https://magisteria-production.up.railway.app/privacy`, `/terms`, `/support` e `/account-deletion`.
-- Build corretivo atual: `versionName=0.8.1`, `versionCode=801`; incrementar o `versionCode` em cada upload posterior.
+- Build de testes atual: `versionName=0.9.1`, `versionCode=901`; incrementar o `versionCode` em cada upload posterior.
 - Criar upload key offline e ativar Play App Signing.
 - Configurar secrets somente no GitHub Environment protegido se build assinado for automatizado.
 

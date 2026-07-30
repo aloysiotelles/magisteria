@@ -87,24 +87,44 @@ TOPIC_REFERENCE_RANGES = {
     "comum": ((164, 170, 0.7), (1905, 1912, 0.55)),
 }
 ORDERED_SOURCES = (
-    ("Catecismo da Igreja Católica", ("catecismo",), 5),
     ("Bíblia Ave Maria — citações bíblicas", ("biblia ave maria", "biblia"), 4),
-    ("Compêndio Vaticano II", ("compendio vaticano ii", "vaticano ii"), 3),
+    ("Catecismo da Igreja Católica", ("catecismo",), 5),
+    ("Compêndios da fé", ("compendio do catecismo", "compendio-catecismo"), 3),
+    ("Código de Direito Canônico", ("direito canonico", "codigo-de-direito", "codex-iuris"), 3),
+    ("Documentos conciliares", ("vaticano ii", "concilio", "compendio vaticano ii"), 4),
+    ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 2),
+    ("Encíclicas", ("enciclica",), 3),
+    ("Exortações apostólicas", ("exortacao",), 3),
+    ("Constituições e cartas apostólicas", ("constituicao apostolica", "carta apostolica"), 3),
+    ("Padres da Igreja", ("padres da igreja", "patristica", "patristico"), 2),
+    ("Doutores da Igreja", ("doutor da igreja", "suma teologica", "suma-teologica", "suma"), 2),
+    ("Liturgia da Igreja", ("missal", "liturgia", "ritual"), 3),
+    ("Documentos da CNBB", ("cnbb", "conferencia nacional dos bispos"), 2),
     ("Compêndio da Doutrina Social da Igreja", ("doutrina-social", "doutrina social"), 2),
     ("A Fé Explicada", ("a fe explicada", "fe explicada"), 2),
-    ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 2),
-    ("Suma Teológica", ("suma teologica", "suma-teologica", "suma"), 2),
 )
 SINGLE_TERM_ORDERED_SOURCES = (
+    ("Bíblia Ave Maria — citações bíblicas", ("biblia ave maria", "biblia"), 2),
+    ("Catecismo da Igreja Católica", ("catecismo",), 5),
+    ("Compêndios da fé", ("compendio do catecismo", "compendio-catecismo"), 3),
+    ("Código de Direito Canônico", ("direito canonico", "codigo-de-direito", "codex-iuris"), 2),
+    ("Documentos conciliares", ("vaticano ii", "concilio", "compendio vaticano ii"), 2),
+    ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 3),
+    ("Encíclicas", ("enciclica",), 2),
+    ("Exortações apostólicas", ("exortacao",), 2),
+    ("Constituições e cartas apostólicas", ("constituicao apostolica", "carta apostolica"), 2),
+    ("Padres da Igreja", ("padres da igreja", "patristica", "patristico"), 2),
+    ("Doutores da Igreja", ("doutor da igreja", "suma teologica", "suma-teologica", "suma"), 2),
+    ("Liturgia da Igreja", ("missal", "liturgia", "ritual"), 2),
+    ("Documentos da CNBB", ("cnbb", "conferencia nacional dos bispos"), 2),
+    ("Compêndio da Doutrina Social da Igreja", ("doutrina-social", "doutrina social"), 2),
+    ("A Fé Explicada", ("a fe explicada", "fe explicada"), 3),
+)
+NOMINAL_INDEX_SOURCES = (
     ("Catecismo da Igreja Católica", ("catecismo",), 5),
     ("Compêndio dos símbolos, definições e declarações", ("simbolos", "definicoes"), 3),
     ("A Fé Explicada", ("a fe explicada", "fe explicada"), 3),
-    ("Bíblia Ave Maria — citações bíblicas", ("biblia ave maria", "biblia"), 2),
-    ("Compêndio Vaticano II", ("compendio vaticano ii", "vaticano ii"), 2),
-    ("Compêndio da Doutrina Social da Igreja", ("doutrina-social", "doutrina social"), 2),
-    ("Suma Teológica", ("suma teologica", "suma-teologica", "suma"), 2),
 )
-NOMINAL_INDEX_SOURCES = SINGLE_TERM_ORDERED_SOURCES[:3]
 BIBLE_QUERY_EXPANSIONS = {
     "caridade": {"amor", "amar", "amou"}, "sacramento": {"batismo", "eucaristia", "ceia"},
     "sacramentos": {"batismo", "eucaristia", "ceia"}, "perdao": {"perdoar", "misericordia"},
@@ -184,6 +204,7 @@ class LocalVectorStore:
             progress_callback(0, len(documents), "Preparando documentos")
         with self._connect() as db:
             known = {row["source"]: (row["size"], row["mtime_ns"]) for row in db.execute("SELECT * FROM files")}
+            changed = bool(set(known) - set(names))
             for removed in set(known) - set(names):
                 db.execute("DELETE FROM chunks WHERE source = ?", (removed,))
                 db.execute("DELETE FROM files WHERE source = ?", (removed,))
@@ -195,6 +216,7 @@ class LocalVectorStore:
                     if progress_callback:
                         progress_callback(position, len(documents), f"Reutilizado: {path.name}")
                     continue
+                changed = True
                 if progress_callback:
                     progress_callback(position - 1, len(documents), f"Lendo {position} de {len(documents)}: {path.name}")
                 db.execute("DELETE FROM chunks WHERE source = ?", (source,))
@@ -219,11 +241,13 @@ class LocalVectorStore:
                 db.commit()
                 if progress_callback:
                     progress_callback(position, len(documents), path.name)
-            updated = datetime.now(timezone.utc).isoformat()
-            db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
+            current_version = db.execute("SELECT value FROM metadata WHERE key='updated_at'").fetchone()
+            if changed or current_version is None:
+                updated = datetime.now(timezone.utc).isoformat()
+                db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
         with self._search_cache_lock:
             self._search_cache.clear()
-        return self.status()
+        return {**self.status(), "acervo_alterado": changed}
 
     def _cached_search(self, key: tuple):
         now = time.monotonic()

@@ -1,6 +1,6 @@
 import { API_BASE_URL, API_TIMEOUT_MS, ASK_TIMEOUT_MS, DOCUMENT_TIMEOUT_MS } from './config';
 import { clearSession, readSession, saveSession } from './auth-store';
-import { ApiError, type AskEvent, type MobileUser, type TokenPair } from './types';
+import { ApiError, type AskEvent, type MobileUser, type SearchHistoryItem, type TokenPair } from './types';
 
 type JsonObject = Record<string, unknown>;
 
@@ -137,6 +137,18 @@ export class ApiClient {
     return tokens.user;
   }
 
+  async forgotPassword(email: string): Promise<string> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/mobile/auth/password/forgot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+    if (!response.ok) throw await errorFromResponse(response);
+    const payload = (await response.json()) as { message: string };
+    return payload.message;
+  }
+
   async logout(): Promise<void> {
     const session = await readSession();
     try {
@@ -152,8 +164,8 @@ export class ApiClient {
     }
   }
 
-  async askStream(question: string, language: string, onEvent: (event: AskEvent) => void): Promise<void> {
-    const body: JsonObject = { pergunta: question, historico: [], idioma: language };
+  async askStream(question: string, language: string, profile: string, onEvent: (event: AskEvent) => void): Promise<void> {
+    const body: JsonObject = { pergunta: question, historico: [], idioma: language, perfil: profile };
     const response = await this.fetchAuthorized('/api/v1/ask-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -199,6 +211,24 @@ export class ApiClient {
       filename = plain || fallbackFilename;
     }
     return { blob, filename: filename.replace(/[\\/:*?"<>|]/g, '-') };
+  }
+
+  async searchHistory(search = '', sort: 'date' | 'frequency' = 'date'): Promise<SearchHistoryItem[]> {
+    const parameters = new URLSearchParams({ search, sort });
+    const response = await this.request<{ items: SearchHistoryItem[] }>(`/api/v1/mobile/history?${parameters}`);
+    return response.items;
+  }
+
+  async historyQuery(id: number): Promise<SearchHistoryItem & { query: string }> {
+    return this.request(`/api/v1/mobile/history/${id}/requery`);
+  }
+
+  async deleteHistoryItem(id: number): Promise<void> {
+    await this.request(`/api/v1/mobile/history/${id}`, { method: 'DELETE' });
+  }
+
+  async clearHistory(): Promise<void> {
+    await this.request('/api/v1/mobile/history', { method: 'DELETE' });
   }
 
   async subscription(): Promise<MobileSubscriptionInfo> {
