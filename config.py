@@ -32,6 +32,12 @@ class Settings:
     APP_NAME = "MAGISTERIA"
     APP_PASSWORD = os.getenv("APP_PASSWORD", "DIVINA")
     ADMIN_BOOTSTRAP_PASSWORD = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "").strip()
+    GMAIL_OAUTH_CLIENT_ID = os.getenv("GMAIL_OAUTH_CLIENT_ID", "").strip()
+    GMAIL_OAUTH_CLIENT_SECRET = os.getenv("GMAIL_OAUTH_CLIENT_SECRET", "").strip()
+    GMAIL_OAUTH_REFRESH_TOKEN = os.getenv("GMAIL_OAUTH_REFRESH_TOKEN", "").strip()
+    GMAIL_SENDER_EMAIL = os.getenv(
+        "GMAIL_SENDER_EMAIL", "aplicativo.magisteria@gmail.com"
+    ).strip()
     DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", str(BASE_DIR / "Documentos"))).expanduser()
     VECTOR_DIR = Path(os.getenv("VECTOR_DIR", str(BASE_DIR / "banco_vetorial"))).expanduser()
     INDEX_FILE = VECTOR_DIR / "indice.json"

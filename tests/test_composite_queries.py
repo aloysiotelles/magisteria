@@ -36,16 +36,16 @@ def test_required_composite_queries_are_planned(question, topic, depth, componen
     assert plan.source_types
 
 
-def test_bible_uses_catholic_canon_and_substantive_continuation():
+def test_bible_uses_catholic_canon_without_omitting_items():
     plan = build_response_plan("Explique a Bíblia Católica, suas divisões e cada livro.")
 
     assert plan.topic_key == "biblia_catolica"
     assert len(plan.components) == 73
     assert "Tobias" in plan.components
     assert "2 Macabeus" in plan.components
-    assert plan.continuation_required is True
-    assert len(plan.active_components) == 5
-    assert "sem superficialidade" in plan.continuation_message
+    assert plan.continuation_required is False
+    assert plan.active_components == plan.components
+    assert plan.max_output_tokens > 5000
 
 
 def test_simple_prayer_query_remains_economical():
@@ -65,6 +65,48 @@ def test_implicit_composite_query_uses_taxonomy():
     assert plan.composite is True
     assert plan.components[0] == "Batismo"
     assert plan.components[-1] == "Matrimônio"
+
+
+def test_closed_set_topic_alone_still_requires_the_complete_set():
+    plan = build_response_plan("Sacramentos")
+
+    assert plan.composite is True
+    assert len(plan.active_components) == 7
+
+
+def test_singular_sacrament_definition_does_not_expand_to_all_seven():
+    plan = build_response_plan("O que é um sacramento?")
+
+    assert plan.topic_key != "sacramentos"
+    assert plan.composite is False
+
+
+@pytest.mark.parametrize(
+    ("question", "topic", "count"),
+    (
+        ("Explique os cinco mandamentos da Igreja.", "mandamentos_igreja", 5),
+        ("Explique as virtudes teologais.", "virtudes_teologais", 3),
+        ("Explique as obras de misericórdia corporais.", "obras_misericordia_corporais", 7),
+        ("Explique os 21 concílios ecumênicos.", "concilios_ecumenicos", 21),
+        ("Explique os documentos do Vaticano II.", "documentos_vaticano_ii", 16),
+    ),
+)
+def test_additional_closed_sets_activate_every_canonical_item(question, topic, count):
+    plan = build_response_plan(question)
+
+    assert plan.topic_key == topic
+    assert plan.closed_set is True
+    assert len(plan.components) == count
+    assert plan.active_components == plan.components
+
+
+def test_open_historical_catalog_declares_scope_instead_of_inventing_closed_list():
+    plan = build_response_plan("Explique as encíclicas da Igreja.")
+
+    assert plan.topic_key == "catalogos_documentais"
+    assert plan.composite is True
+    assert plan.closed_set is False
+    assert "não possui uma enumeração universal" in plan.catalog_scope
 
 
 def test_semantically_equivalent_sacrament_queries_share_document_signature():
@@ -156,7 +198,7 @@ def test_layered_retrieval_cache_and_corpus_invalidation(tmp_path: Path):
     third = orchestrator.retrieve("sete sacramentos", plan, minimum_score=0.01)
 
     assert first.cache_hit is False
-    assert calls_after_first == 8  # visão geral + um bloco por sacramento
+    assert calls_after_first == 9  # visão geral + taxonomia + um bloco por sacramento
     assert second.cache_hit is True
     assert "answer" not in cached_payload.lower()
     assert "Batismo" in summary[0]

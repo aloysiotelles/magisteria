@@ -30,6 +30,7 @@ from services.answer_service import (
     format_sources,
 )
 from services.auth_repository import AuthRepository
+from services.email_service import EmailService
 from services.localization import LanguageCode, answer_message, normalize_language
 from services.presentation_service import PresentationService, safe_filename
 from services.asaas_service import AsaasError, AsaasService
@@ -48,7 +49,7 @@ from services.retrieval_orchestrator import RetrievalOrchestrator
 from services.search_history import UserSearchHistory
 from services.semantic_cache import SemanticCache
 
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -93,6 +94,13 @@ asaas_service = AsaasService(
 subscription_service = SubscriptionService(
     settings.GOOGLE_PLAY_PRODUCT_ID,
     settings.APPLE_PRODUCT_ID,
+)
+email_service = EmailService(
+    settings.GMAIL_OAUTH_CLIENT_ID,
+    settings.GMAIL_OAUTH_CLIENT_SECRET,
+    settings.GMAIL_OAUTH_REFRESH_TOKEN,
+    settings.GMAIL_SENDER_EMAIL,
+    settings.APP_PUBLIC_URL,
 )
 semantic_cache = SemanticCache(
     settings.APP_DATABASE_FILE,
@@ -201,8 +209,12 @@ rate_limit_lock = asyncio.Lock()
 RATE_LIMIT_RULES = {
     "/login": (20, 300),
     "/cadastro": (10, 300),
+    "/esqueci-senha": (5, 300),
+    "/redefinir-senha": (10, 300),
     "/api/v1/mobile/auth/login": (20, 300),
     "/api/v1/mobile/auth/register": (10, 300),
+    "/api/v1/mobile/auth/password/forgot": (5, 300),
+    "/api/v1/mobile/auth/password/reset": (10, 300),
     "/perguntar": (30, 60),
     "/perguntar-stream": (30, 60),
     "/api/v1/ask": (30, 60),
@@ -243,11 +255,15 @@ PUBLIC_PATHS = {
     "/versao",
     "/login",
     "/cadastro",
+    "/esqueci-senha",
+    "/redefinir-senha",
     "/webhooks/mercadopago",
     "/webhooks/asaas",
     "/api/v1/mobile/auth/login",
     "/api/v1/mobile/auth/register",
     "/api/v1/mobile/auth/refresh",
+    "/api/v1/mobile/auth/password/forgot",
+    "/api/v1/mobile/auth/password/reset",
     "/privacy",
     "/terms",
     "/support",
@@ -518,80 +534,6 @@ async def reconcile_mercado_pago_invoice(invoice_id: str) -> dict:
     return {"invoice_id": provider_invoice_id, "status": status, "order": dict(updated)}
 
 
-def auth_page(title: str, intro: str, action: str, fields: str, footer: str, message: str = "", error: bool = False) -> HTMLResponse:
-    notice = f'<p class="{"erro" if error else "sucesso"}">{html.escape(message)}</p>' if message else ""
-    return HTMLResponse(f"""<!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)} - MAGISTERIA</title><style>
-body{{font-family:system-ui;background:#f3efe7;display:grid;place-items:center;min-height:100vh;margin:0;color:#251d16}}
-form{{background:white;padding:2rem;border-radius:18px;box-shadow:0 12px 40px #0002;width:min(420px,86vw);text-align:center}}
-input,button{{box-sizing:border-box;width:100%;padding:.9rem;margin-top:8px;border-radius:10px;font-size:1rem}}
-input{{border:1px solid #9a8c7b}}button{{border:0;background:#173f2a;color:white;font-weight:700;cursor:pointer}}
-a{{color:#a52a20;font-weight:700;text-decoration:none}}.erro{{color:#a11}}.sucesso{{color:#17613a}}h1{{margin:.2rem 0;color:#173f2a}}
-.auth-logo{{width:128px;height:128px;object-fit:cover;border-radius:50%;filter:drop-shadow(0 8px 14px #0002);margin-bottom:.7rem}}
-.auth-slogan{{color:#173f2a;font-weight:800;line-height:1.45;margin:.25rem 0 1rem}}.auth-slogan strong{{color:#a52a20}}
-</style></head><body><form method="post" action="{action}"><img class="auth-logo" src="/static/logo-magisteria.png" alt="Logo MAGISTERIA"><h1>MAGISTERIA</h1>
-<p class="auth-slogan">Gaste tempo <strong>EVANGELIZANDO</strong>, não pesquisando</p>
-<p>{html.escape(intro)}</p>{notice}{fields}<button type="submit">{html.escape(title)}</button><p>{footer}</p></form></body></html>""")
-
-
-@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
-async def login_page(erro: str = "", cadastrado: str = ""):
-    message = "Login ou senha incorretos." if erro else ("Cadastro criado. Entre para continuar." if cadastrado else "")
-    fields = """
-<input type="text" name="email" placeholder="Email ou Admin" required autofocus>
-<input type="password" name="senha" placeholder="Senha" required>
-"""
-    return auth_page("Entrar", "Acesse com email e senha.", "/login", fields, 'Ainda nao tem conta? <a href="/cadastro">Criar cadastro</a>.', message, bool(erro))
-
-
-@app.post("/login", include_in_schema=False)
-async def login(request: Request):
-    fields = parse_qs((await request.body()).decode("utf-8"))
-    user = auth_repository.authenticate(form_value(fields, "email"), form_value(fields, "senha"))
-    if not user:
-        return RedirectResponse(url="/login?erro=1", status_code=303)
-    response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie(
-        AUTH_COOKIE,
-        auth_repository.create_session(user["id"]),
-        max_age=60 * 60 * 24 * 30,
-        httponly=True,
-        secure=settings.COOKIE_SECURE,
-        samesite="lax",
-    )
-    return response
-
-
-@app.get("/cadastro", response_class=HTMLResponse, include_in_schema=False)
-async def register_page(erro: str = ""):
-    fields = """
-<input type="text" name="nome" placeholder="Nome completo" required autofocus>
-<input type="email" name="email" placeholder="Email" required>
-<input type="password" name="senha" placeholder="Senha forte" required minlength="8"
-       pattern="(?=.*[a-záéíóúàâêôãõç])(?=.*[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ])(?=.*[0-9]).{8,}"
-       title="Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número.">
-"""
-    return auth_page("Criar cadastro", "Crie sua conta gratuita.", "/cadastro", fields, 'Ja tem conta? <a href="/login">Entrar</a>.', erro, bool(erro))
-
-
-@app.post("/cadastro", include_in_schema=False)
-async def register(request: Request):
-    fields = parse_qs((await request.body()).decode("utf-8"))
-    ok, message = auth_repository.create_user(form_value(fields, "nome"), form_value(fields, "email"), form_value(fields, "senha"))
-    if not ok:
-        return RedirectResponse(url=f"/cadastro?erro={quote(message)}", status_code=303)
-    return RedirectResponse(url="/login?cadastrado=1", status_code=303)
-
-
-@app.post("/logout", include_in_schema=False)
-async def logout(request: Request):
-    auth_repository.delete_session(request.cookies.get(AUTH_COOKIE, ""))
-    response = RedirectResponse(url="/login", status_code=303)
-    response.delete_cookie(AUTH_COOKIE, secure=settings.COOKIE_SECURE, samesite="lax")
-    return response
-
-
 @app.middleware("http")
 async def authentication_middleware(request: Request, call_next):
     path = request.url.path
@@ -635,24 +577,6 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
-def current_user(request: Request) -> dict:
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Autenticacao necessaria.")
-    return dict(user)
-
-
-def require_admin(request: Request) -> dict:
-    user = current_user(request)
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Acesso administrativo restrito.")
-    return user
-
-
-def form_value(fields: dict[str, list[str]], key: str) -> str:
-    return fields.get(key, [""])[0].strip()
-
-
 def auth_page(title: str, intro: str, action: str, fields: str, footer: str, message: str = "", error: bool = False) -> HTMLResponse:
     notice = f'<p class="{"erro" if error else "sucesso"}">{html.escape(message)}</p>' if message else ""
     return HTMLResponse(f"""<!doctype html>
@@ -671,13 +595,28 @@ a{{color:#a52a20;font-weight:700;text-decoration:none}}.erro{{color:#a11}}.suces
 
 
 @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
-async def login_page(erro: str = "", cadastrado: str = ""):
-    message = "Login ou senha incorretos." if erro else ("Cadastro criado. Entre para continuar." if cadastrado else "")
+async def login_page(erro: str = "", cadastrado: str = "", redefinida: str = ""):
+    message = (
+        "Login ou senha incorretos."
+        if erro
+        else "Cadastro criado. Entre para continuar."
+        if cadastrado
+        else "Senha redefinida. Entre novamente."
+        if redefinida
+        else ""
+    )
     fields = """
 <input type="text" name="email" placeholder="Email ou Admin" required autofocus>
 <input type="password" name="senha" placeholder="Senha" required>
 """
-    return auth_page("Entrar", "Acesse com email e senha.", "/login", fields, 'Ainda nao tem conta? <a href="/cadastro">Criar cadastro</a>.', message, bool(erro))
+    footer = (
+        'Ainda nao tem conta? <a href="/cadastro">Criar cadastro</a>.<br>'
+        '<a href="/esqueci-senha">Esqueci minha senha</a>.'
+    )
+    return auth_page(
+        "Entrar", "Acesse com email e senha.", "/login", fields,
+        footer, message, bool(erro),
+    )
 
 
 @app.post("/login", include_in_schema=False)
@@ -717,6 +656,98 @@ async def register(request: Request):
     if not ok:
         return RedirectResponse(url=f"/cadastro?erro={quote(message)}", status_code=303)
     return RedirectResponse(url="/login?cadastrado=1", status_code=303)
+
+
+async def send_password_reset_if_registered(email: str) -> None:
+    if not email_service.configured:
+        raise HTTPException(
+            status_code=503,
+            detail="O envio de email para recuperacao ainda nao esta configurado.",
+        )
+    issued = await asyncio.to_thread(auth_repository.issue_password_reset_token, email)
+    if not issued:
+        return
+    token, user = issued
+    try:
+        await email_service.send_password_reset(user["full_name"], user["email"], token)
+    except Exception as exc:
+        await asyncio.to_thread(auth_repository.discard_password_reset_token, token)
+        logger.exception("Falha ao enviar email de redefinicao de senha.")
+        raise HTTPException(
+            status_code=503,
+            detail="Nao foi possivel enviar o email agora. Tente novamente em alguns minutos.",
+        ) from exc
+
+
+@app.get("/esqueci-senha", response_class=HTMLResponse, include_in_schema=False)
+async def forgot_password_page():
+    fields = '<input type="email" name="email" placeholder="Email cadastrado" required autofocus>'
+    return auth_page(
+        "Enviar link seguro",
+        "Informe o email cadastrado para receber um link de redefinicao.",
+        "/esqueci-senha",
+        fields,
+        '<a href="/login">Voltar para entrar</a>.',
+    )
+
+
+@app.post("/esqueci-senha", response_class=HTMLResponse, include_in_schema=False)
+async def forgot_password(request: Request):
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    await send_password_reset_if_registered(form_value(fields, "email"))
+    return auth_page(
+        "Solicitacao recebida",
+        "Se o email estiver cadastrado, enviaremos um link seguro que expira em 30 minutos.",
+        "/esqueci-senha",
+        '<input type="email" name="email" placeholder="Email cadastrado" required>',
+        '<a href="/login">Voltar para entrar</a>.',
+        "Verifique sua caixa de entrada e a pasta de spam.",
+    )
+
+
+def reset_password_page(token: str, message: str = "", error: bool = False) -> HTMLResponse:
+    safe_token = html.escape(token, quote=True)
+    fields = f"""
+<input type="hidden" name="token" value="{safe_token}">
+<input type="password" name="nova_senha" placeholder="Nova senha" required minlength="8"
+       pattern="(?=.*[a-záéíóúàâêôãõç])(?=.*[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ])(?=.*[0-9]).{{8,}}"
+       title="Use pelo menos 8 caracteres, com uma letra maiúscula, uma minúscula e um número." autofocus>
+<input type="password" name="confirmar_senha" placeholder="Confirmar nova senha" required minlength="8">
+"""
+    return auth_page(
+        "Criar nova senha",
+        "Use pelo menos 8 caracteres, com uma letra maiuscula, uma minuscula e um numero.",
+        "/redefinir-senha",
+        fields,
+        '<a href="/login">Voltar para entrar</a>.',
+        message,
+        error,
+    )
+
+
+@app.get("/redefinir-senha", response_class=HTMLResponse, include_in_schema=False)
+async def reset_password_form(token: str = ""):
+    if len(token.strip()) < 20:
+        return reset_password_page("", "Este link e invalido ou esta incompleto.", True)
+    return reset_password_page(token.strip())
+
+
+@app.post("/redefinir-senha", include_in_schema=False)
+async def reset_password(request: Request):
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    token = form_value(fields, "token")
+    password = form_value(fields, "nova_senha")
+    confirmation = form_value(fields, "confirmar_senha")
+    if password != confirmation:
+        return reset_password_page(token, "A confirmacao da nova senha nao confere.", True)
+    ok, message = await asyncio.to_thread(
+        auth_repository.reset_password_with_token,
+        token,
+        password,
+    )
+    if not ok:
+        return reset_password_page(token, message, True)
+    return RedirectResponse(url="/login?redefinida=1", status_code=303)
 
 
 @app.post("/logout", include_in_schema=False)
@@ -1057,6 +1088,16 @@ class MobileLogoutRequest(BaseModel):
     refresh_token: str = Field(default="", max_length=500)
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=500)
+    new_password: str = Field(min_length=8, max_length=200)
+    confirm_password: str = Field(min_length=8, max_length=200)
+
+
 class AccountDeletionRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
     confirmation: str = Field(min_length=1, max_length=40)
@@ -1108,6 +1149,31 @@ async def mobile_register(payload: MobileRegisterRequest):
     user = await asyncio.to_thread(auth_repository.authenticate, payload.email, payload.password)
     tokens = await asyncio.to_thread(auth_repository.issue_mobile_tokens, user["id"])
     return {**tokens, "user": mobile_user_payload(dict(user))}
+
+
+@app.post("/api/v1/mobile/auth/password/forgot")
+async def mobile_forgot_password(payload: ForgotPasswordRequest):
+    await send_password_reset_if_registered(payload.email)
+    return {
+        "message": (
+            "Se o email estiver cadastrado, enviaremos um link seguro para criar uma nova senha. "
+            "Verifique tambem a pasta de spam."
+        )
+    }
+
+
+@app.post("/api/v1/mobile/auth/password/reset")
+async def mobile_reset_password(payload: ResetPasswordRequest):
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="A confirmacao da nova senha nao confere.")
+    ok, message = await asyncio.to_thread(
+        auth_repository.reset_password_with_token,
+        payload.token,
+        payload.new_password,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"message": message}
 
 
 @app.post("/api/v1/mobile/auth/refresh")

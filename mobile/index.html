@@ -44,6 +44,7 @@
           <p id="auth-error" class="form-error" role="alert" hidden></p>
           <button id="auth-submit" class="primary-button" type="submit">Entrar</button>
           <button id="auth-toggle" class="text-button" type="button">Criar uma conta</button>
+          <button id="forgot-password-button" class="text-button" type="button">Esqueci minha senha</button>
         </form>
       </section>
 
@@ -158,6 +159,25 @@
       <div class="dialog-header"><div><p class="eyebrow">Biblioteca documental</p><h2>Base de dados</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
       <p id="database-summary" class="modal-intro">Consultando documentos…</p>
       <ul id="database-list" class="data-list"></ul>
+    </dialog>
+
+    <dialog id="opening-disclaimer-dialog" class="opening-disclaimer" data-required-dialog>
+      <div class="dialog-header"><div><p class="eyebrow">Uso responsável</p><h2>Aviso importante</h2></div></div>
+      <p>O MAGISTERIA é uma ferramenta de apoio ao estudo, à catequese e à evangelização.</p>
+      <p><strong>Ele não substitui a formação catequética, a direção espiritual, o acompanhamento pastoral nem o ensinamento vivo da Igreja.</strong></p>
+      <p>Use-o como complemento, em comunhão com sua comunidade, catequistas, sacerdotes e demais ministros da Igreja.</p>
+      <button id="opening-disclaimer-ok" class="primary-button" type="button">OK</button>
+    </dialog>
+
+    <dialog id="forgot-password-dialog">
+      <div class="dialog-header"><div><p class="eyebrow">Segurança</p><h2>Recuperar senha</h2></div><button data-close-dialog type="button" aria-label="Fechar">×</button></div>
+      <form id="forgot-password-form">
+        <p class="modal-intro">Informe o email cadastrado. Você receberá um link seguro, válido por 30 minutos, para criar uma nova senha.</p>
+        <label for="forgot-password-email">Email cadastrado</label>
+        <input id="forgot-password-email" type="email" autocomplete="email" maxlength="320" required />
+        <p id="forgot-password-status" class="modal-intro" aria-live="polite"></p>
+        <button id="forgot-password-submit" class="primary-button" type="submit">Enviar link seguro</button>
+      </form>
     </dialog>
 
     <dialog id="history-dialog" class="wide-dialog">

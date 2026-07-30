@@ -55,20 +55,50 @@ class CoverageValidator:
         return CoverageResult(not missing, missing, (), (), 0)
 
     def validate_answer(self, plan: ResponsePlan, answer: str, source_count: int) -> CoverageResult:
-        folded_answer = fold_text(answer)
+        # Preserva quebras de linha para distinguir uma enumeração nominal de
+        # subseções realmente desenvolvidas.
+        folded_answer = "\n".join(fold_text(line) for line in answer.splitlines())
         missing: list[str] = []
         shallow: list[str] = []
+        component_occurrences: dict[str, list[int]] = {}
+        all_positions: list[tuple[int, str]] = []
         for component in plan.active_components:
-            terms = self._component_terms(component)
-            matches = [term for term in terms if re.search(rf"\b{re.escape(term)}\b", folded_answer)]
-            if not matches:
+            positions: set[int] = set()
+            for term in self._component_terms(component):
+                positions.update(match.start() for match in re.finditer(rf"\b{re.escape(term)}\b", folded_answer))
+            component_occurrences[component] = sorted(positions)
+            all_positions.extend((position, component) for position in positions)
+        all_positions.sort()
+
+        for component in plan.active_components:
+            positions = component_occurrences.get(component, [])
+            if not positions:
                 missing.append(component)
                 continue
-            first = min((folded_answer.find(term) for term in matches if folded_answer.find(term) >= 0), default=-1)
-            if first >= 0:
-                window = folded_answer[first:first + plan.minimum_component_characters]
-                if len(window) < min(plan.minimum_component_characters, 80):
-                    shallow.append(component)
+            substantive = False
+            for position in positions:
+                line_start = folded_answer.rfind("\n", 0, position) + 1
+                line_end = folded_answer.find("\n", position)
+                if line_end < 0:
+                    line_end = len(folded_answer)
+                line = folded_answer[line_start:line_end]
+                names_on_line = sum(
+                    1 for other in plan.active_components
+                    if any(term in line for term in self._component_terms(other))
+                )
+                if names_on_line >= 3:
+                    # Uma enumeração inicial prova presença nominal, não explicação.
+                    continue
+                next_component = min((
+                    other_position for other_position, other in all_positions
+                    if other_position > position and other != component
+                ), default=len(folded_answer))
+                segment = folded_answer[position:min(next_component, position + 1200)]
+                if len(segment.strip()) >= plan.minimum_component_characters:
+                    substantive = True
+                    break
+            if not substantive:
+                shallow.append(component)
         citations = [int(value) for value in self.CITATION_PATTERN.findall(answer)]
         invalid = tuple(f"F{value}" for value in citations if value < 1 or value > source_count)
         if plan.composite and source_count and not citations:

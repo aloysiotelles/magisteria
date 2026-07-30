@@ -9,7 +9,7 @@ from services.catholic_taxonomy import TAXONOMY_VERSION, TopicSpec, classify_cat
 from services.query_analysis import QueryType, analyze_query
 
 
-RESPONSE_STRATEGY_VERSION = "layered-rag-1"
+RESPONSE_STRATEGY_VERSION = "exhaustive-layered-rag-2"
 
 
 class DepthLevel(StrEnum):
@@ -60,6 +60,8 @@ class ResponsePlan:
     active_components: tuple[str, ...]
     dimensions: tuple[str, ...]
     source_types: tuple[str, ...]
+    closed_set: bool
+    catalog_scope: str
     introduction_required: bool
     conclusion_required: bool
     continuation_required: bool
@@ -83,7 +85,13 @@ class ResponsePlan:
 
     @property
     def semantic_signature(self) -> str:
-        base = "|".join((self.topic_key, self.category, *map(fold_text, self.components)))
+        base = "|".join((
+            self.topic_key,
+            self.category,
+            "fechado" if self.closed_set else "catalogo",
+            fold_text(self.catalog_scope),
+            *map(fold_text, self.components),
+        ))
         return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict:
@@ -153,14 +161,8 @@ def build_response_plan(
     user_profile: str = "adulto_leigo",
 ) -> ResponsePlan:
     spec = match_topic(question)
-    folded = fold_text(question)
-    explicit_components = bool(ENUMERATIVE_PATTERN.search(question) or DEEP_PATTERN.search(question))
-    implicit_complete = bool(spec and spec.components and re.search(
-        r"\b(explique|compreender|entender|estudar|quero saber|quais|o que sao|o que são|apresente)\b",
-        folded,
-    ))
     asks_summary = bool(SUMMARY_PATTERN.search(question))
-    composite = bool((spec and spec.components and (explicit_components or implicit_complete or asks_summary)) or (
+    composite = bool((spec and (spec.components or not spec.closed_set)) or (
         ENUMERATIVE_PATTERN.search(question) and len(question.split()) > 2
     ))
     asks_deep = bool(DEEP_PATTERN.search(question))
@@ -177,21 +179,16 @@ def build_response_plan(
     if depth == DepthLevel.SUMMARY:
         max_context_tokens, max_output_tokens, minimum_chars = 4200, 1200, 70
     elif depth == DepthLevel.DEEP:
-        max_context_tokens, max_output_tokens, minimum_chars = 10500, 5000, 220
+        component_count = len(components)
+        max_context_tokens = min(30000, max(12000, 5000 + component_count * 300))
+        max_output_tokens = min(32000, max(6000, 2500 + component_count * 240))
+        minimum_chars = 160 if component_count > 30 else 220
     else:
         max_context_tokens, max_output_tokens, minimum_chars = 6200, 2000, 120
 
-    # Very large canonical sets are deliberately serialized into substantive
-    # parts. The full component list remains in the plan for continuation.
-    active_limit = len(components)
-    continuation_message = ""
-    if len(components) > 20:
-        active_limit = 5 if depth == DepthLevel.DEEP else 8
-        continuation_message = (
-            f"Esta explicação foi planejada em partes para cobrir {len(components)} componentes sem superficialidade. "
-            f"Nesta resposta serão tratados a visão geral e os primeiros {active_limit}; os demais permanecem registrados para continuação."
-        )
-    active_components = components[:active_limit]
+    # A lista canônica inteira permanece ativa. Se o provedor atingir um limite
+    # técnico, o serviço continua internamente antes de entregar a resposta.
+    active_components = components
     topic_key = spec.key if spec else re.sub(r"[^a-z0-9]+", "_", fold_text(theme)).strip("_")[:100]
     title = spec.title if spec else theme[:120]
     profile = user_profile if user_profile in PROFILE_INSTRUCTIONS else "adulto_leigo"
@@ -206,10 +203,12 @@ def build_response_plan(
         active_components=active_components,
         dimensions=spec.dimensions if spec else _generic_dimensions(category),
         source_types=spec.source_types if spec else ("Sagrada Escritura", "Catecismo", "Magistério", "fontes do acervo"),
+        closed_set=spec.closed_set if spec else False,
+        catalog_scope=spec.catalog_scope if spec else "",
         introduction_required=True,
         conclusion_required=depth != DepthLevel.SUMMARY,
-        continuation_required=len(active_components) < len(components),
-        continuation_message=continuation_message,
+        continuation_required=False,
+        continuation_message="",
         user_profile=profile,
         language=language,
         max_context_tokens=max_context_tokens,

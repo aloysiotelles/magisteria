@@ -121,13 +121,13 @@ def test_editorial_source_order(tmp_path: Path):
 
     categories = list(dict.fromkeys(item["categoria"] for item in results))
     assert categories[:7] == [
-        "Catecismo da Igreja Católica",
         "Bíblia Ave Maria — citações bíblicas",
-        "Compêndio Vaticano II",
+        "Catecismo da Igreja Católica",
+        "Documentos conciliares",
+        "Compêndio dos símbolos, definições e declarações",
+        "Doutores da Igreja",
         "Compêndio da Doutrina Social da Igreja",
         "A Fé Explicada",
-        "Compêndio dos símbolos, definições e declarações",
-        "Suma Teológica",
     ]
     assert categories[-1] == "Demais documentos"
 
@@ -159,9 +159,9 @@ def test_single_word_uses_nominal_index_hierarchy(tmp_path: Path):
 
     categories = list(dict.fromkeys(item["categoria"] for item in results))
     assert categories[:3] == [
+        "Bíblia Ave Maria — citações bíblicas",
         "Catecismo da Igreja Católica",
         "Compêndio dos símbolos, definições e declarações",
-        "A Fé Explicada",
     ]
     assert any("transgressão humana" in item["text"] for item in results)
     assert any("desobediência moral" in item["text"] for item in results)
@@ -1076,6 +1076,76 @@ def test_question_validation():
     client = authenticated_client()
     assert client.post("/perguntar", json={"pergunta": ""}).status_code == 422
     assert application.QuestionRequest(pergunta="Fé").pergunta == "Fé"
+
+
+def test_password_reset_token_is_one_time_and_revokes_existing_sessions(tmp_path: Path):
+    repository = AuthRepository(tmp_path / "password-reset.sqlite")
+    assert repository.create_user("Usuario Recuperacao", "recover@example.com", "SenhaForte1")[0]
+    user = repository.find_user_by_login("recover@example.com")
+    session = repository.create_session(user["id"])
+    tokens = repository.issue_mobile_tokens(user["id"])
+
+    issued = repository.issue_password_reset_token("RECOVER@example.com")
+    assert issued is not None
+    token, account = issued
+    assert account["id"] == user["id"]
+    assert repository.issue_password_reset_token("missing@example.com") is None
+
+    assert repository.reset_password_with_token(token, "NovaSenha2")[0] is True
+    assert repository.reset_password_with_token(token, "OutraSenha3")[0] is False
+    assert repository.authenticate("recover@example.com", "SenhaForte1") is None
+    assert repository.authenticate("recover@example.com", "NovaSenha2") is not None
+    assert repository.get_user_by_session(session) is None
+    assert repository.get_user_by_access_token(tokens["access_token"]) is None
+
+
+def test_mobile_password_recovery_is_generic_and_resets_password(tmp_path: Path, monkeypatch):
+    repository = AuthRepository(tmp_path / "password-reset-api.sqlite")
+    assert repository.create_user("Usuario Mobile", "mobile-recover@example.com", "SenhaForte1")[0]
+    sent: list[tuple[str, str, str]] = []
+
+    class FakeEmailService:
+        configured = True
+
+        async def send_password_reset(self, full_name: str, recipient: str, token: str):
+            sent.append((full_name, recipient, token))
+
+    monkeypatch.setattr(application, "auth_repository", repository)
+    monkeypatch.setattr(application, "email_service", FakeEmailService())
+    client = TestClient(application.app)
+
+    known = client.post(
+        "/api/v1/mobile/auth/password/forgot",
+        json={"email": "mobile-recover@example.com"},
+    )
+    unknown = client.post(
+        "/api/v1/mobile/auth/password/forgot",
+        json={"email": "unknown@example.com"},
+    )
+    assert known.status_code == unknown.status_code == 200
+    assert known.json() == unknown.json()
+    assert len(sent) == 1
+
+    reset = client.post(
+        "/api/v1/mobile/auth/password/reset",
+        json={
+            "token": sent[0][2],
+            "new_password": "NovaSenha2",
+            "confirm_password": "NovaSenha2",
+        },
+    )
+    assert reset.status_code == 200
+    assert repository.authenticate("mobile-recover@example.com", "NovaSenha2") is not None
+
+
+def test_pastoral_notice_is_shown_only_when_app_opens():
+    web = (Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text(encoding="utf-8")
+    mobile = (Path(__file__).resolve().parents[1] / "mobile" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="disclaimer-modal"' in web
+    assert 'id="opening-disclaimer-dialog"' in mobile
+    assert 'id="response-disclaimer"' not in web
+    assert 'id="response-disclaimer"' not in mobile
 
 
 def test_rag_diagnostics_redacts_and_persists_trace(tmp_path: Path):

@@ -25,15 +25,18 @@ class RetrievalBundle:
 class DocumentReranker:
     SOURCE_PRIORITIES = (
         (1, ("biblia", "sagrada escritura")),
-        (2, ("concilio", "vaticano ii")),
-        (3, ("simbolos", "dogma", "denzinger")),
-        (4, ("catecismo",)),
-        (5, ("direito canonico", "codigo de direito")),
-        (6, ("enciclica", "exortacao", "carta apostolica", "pontificio")),
-        (7, ("dicasterio", "congregacao", "doutrina da fe")),
-        (8, ("missal", "liturgia")),
-        (9, ("padres da igreja", "doutor da igreja", "suma teologica")),
-        (10, ("cnbb", "episcopal")),
+        (2, ("catecismo",)),
+        (3, ("compendio",)),
+        (4, ("direito canonico", "codigo de direito")),
+        (5, ("concilio", "vaticano ii", "simbolos", "dogma", "denzinger")),
+        (6, ("enciclica",)),
+        (7, ("exortacao",)),
+        (8, ("constituicao apostolica", "carta apostolica", "pontificio")),
+        (9, ("dicasterio", "congregacao", "doutrina da fe")),
+        (10, ("padres da igreja",)),
+        (11, ("doutor da igreja", "suma teologica")),
+        (12, ("missal", "liturgia")),
+        (13, ("cnbb", "episcopal")),
     )
 
     @classmethod
@@ -42,7 +45,7 @@ class DocumentReranker:
         for level, hints in cls.SOURCE_PRIORITIES:
             if any(hint in normalized for hint in hints):
                 return level
-        return 11
+        return 14
 
     @classmethod
     def rank(
@@ -59,7 +62,7 @@ class DocumentReranker:
             authority = cls.authority_level(str(chunk.get("source") or ""))
             retrieval_score = float(chunk.get("score_normalized") or chunk.get("score") or 0)
             summary_bonus = 0.08 if str(chunk.get("source") or "") in technical_source_hints else 0
-            combined = retrieval_score + overlap * 0.35 + (12 - authority) * 0.025 + summary_bonus
+            combined = retrieval_score + overlap * 0.35 + (15 - authority) * 0.025 + summary_bonus
             ranked.append({**chunk, "authority_level": authority, "orchestrated_score": round(combined, 4)})
         return sorted(ranked, key=lambda item: (item["orchestrated_score"], -item["authority_level"]), reverse=True)
 
@@ -147,6 +150,21 @@ class TokenBudgetManager:
 
 
 class RetrievalOrchestrator:
+    REFERENCE_DOCUMENTS = (
+        ("catecismo", "Catecismo da Igreja Católica"),
+        ("compendio", "Compêndio do Catecismo da Igreja Católica"),
+        ("codigo de direito canonico", "Código de Direito Canônico"),
+        ("dei verbum", "Dei Verbum"),
+        ("lumen gentium", "Lumen Gentium"),
+        ("sacrosanctum concilium", "Sacrosanctum Concilium"),
+        ("gaudium et spes", "Gaudium et Spes"),
+        ("dignitatis humanae", "Dignitatis Humanae"),
+        ("unitatis redintegratio", "Unitatis Redintegratio"),
+        ("nostra aetate", "Nostra Aetate"),
+        ("evangelii gaudium", "Evangelii Gaudium"),
+        ("fidei depositum", "Fidei Depositum"),
+    )
+
     def __init__(self, vector_store, semantic_cache: SemanticCache):
         self.vector_store = vector_store
         self.semantic_cache = semantic_cache
@@ -195,6 +213,22 @@ class RetrievalOrchestrator:
         candidates.extend({**chunk, "component": "Visão geral"} for chunk in general_chunks)
         traces.append(general_trace)
 
+        # Segunda passagem orientada por taxonomia, títulos e tipos documentais.
+        # O armazenamento vetorial executa, dentro de cada chamada, busca lexical,
+        # expansão semântica, metadados de título e orientação por índices.
+        taxonomy_query = (
+            f"{plan.theme}. Categorias e subtítulos: {', '.join(plan.dimensions)}. "
+            f"Fontes: {', '.join(plan.source_types)}"
+        )
+        taxonomy_chunks, taxonomy_trace = self._search(
+            taxonomy_query,
+            general_limit,
+            max(minimum_score * 0.75, 0.02),
+            excluded_sources,
+        )
+        candidates.extend({**chunk, "component": "Taxonomia e fontes"} for chunk in taxonomy_chunks)
+        traces.append(taxonomy_trace)
+
         if plan.composite:
             component_limit = 1 if plan.depth == "resumido" else 3
             dimension_hint = ", ".join(plan.dimensions[:4])
@@ -204,12 +238,41 @@ class RetrievalOrchestrator:
                 candidates.extend({**chunk, "component": component} for chunk in found)
                 traces.append(trace)
 
+        # Segue referências documentais explícitas encontradas nos primeiros
+        # resultados e incorpora o documento citado antes do reranqueamento final.
+        reference_queries = self._reference_queries(candidates, plan.theme)
+        for query in reference_queries:
+            found, trace = self._search(
+                query,
+                3,
+                max(minimum_score * 0.65, 0.015),
+                excluded_sources,
+            )
+            candidates.extend({**chunk, "component": "Referência cruzada"} for chunk in found)
+            traces.append({**trace, "reference_follow_up": query})
+
         ranked = self.reranker.rank(candidates, plan, technical_hints)
         deduplicated = self.deduplicator.deduplicate(ranked)
         selected = self.token_budget.select(deduplicated, plan)
         self.semantic_cache.put(plan, corpus_version, selected)
         diagnostics = self._diagnostics(search_query, plan, selected, traces, False)
         return RetrievalBundle(selected, diagnostics, False, corpus_version)
+
+    @classmethod
+    def _reference_queries(cls, chunks: list[dict], theme: str) -> tuple[str, ...]:
+        queries: list[str] = []
+        for chunk in chunks:
+            text = fold_text(str(chunk.get("text") or ""))
+            source = fold_text(str(chunk.get("source") or ""))
+            for alias, title in cls.REFERENCE_DOCUMENTS:
+                if alias not in text or alias in source:
+                    continue
+                query = f"{title}: {theme}"
+                if query not in queries:
+                    queries.append(query)
+                if len(queries) >= 8:
+                    return tuple(queries)
+        return tuple(queries)
 
     def _search(
         self,
@@ -255,7 +318,7 @@ class RetrievalOrchestrator:
                     "id": item.get("id"), "source": item.get("source"),
                     "score": item.get("orchestrated_score", item.get("score", 0)),
                     "score_normalized": item.get("score_normalized", 0),
-                    "authority_level": item.get("authority_level", 11),
+                    "authority_level": item.get("authority_level", 14),
                     "component": item.get("component", "Visão geral"),
                 }
                 for item in chunks

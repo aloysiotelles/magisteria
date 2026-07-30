@@ -137,6 +137,18 @@ export class ApiClient {
     return tokens.user;
   }
 
+  async forgotPassword(email: string): Promise<string> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/mobile/auth/password/forgot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+    if (!response.ok) throw await errorFromResponse(response);
+    const payload = (await response.json()) as { message: string };
+    return payload.message;
+  }
+
   async logout(): Promise<void> {
     const session = await readSession();
     try {

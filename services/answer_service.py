@@ -100,10 +100,12 @@ class AnswerService:
         if not self.api_key:
             raise RuntimeError("A chave OPENAI_API_KEY ainda não foi configurada no arquivo .env.")
 
-        response = await self.client.responses.create(
-            **self._request_arguments(question, chunks, history or [], style_chunks or [], selected_language, plan)
+        answer = await self._create_complete_text(
+            self._request_arguments(
+                question, chunks, history or [], style_chunks or [], selected_language, plan
+            ),
+            selected_language,
         )
-        answer = (response.output_text or "").strip()
         if not answer:
             return {
                 "resposta": answer_message("no_documents", selected_language),
@@ -144,6 +146,52 @@ class AnswerService:
             regenerated = True
             action = "rewrite"
             coverage = self.coverage_validator.validate_answer(plan, final_answer, len(chunks))
+
+        # Caso uma enumeração ainda tenha lacunas, completa internamente os itens
+        # restantes e só então devolve a resposta. O lote deriva do orçamento real
+        # do plano; não existe recorte fixo da lista doutrinal.
+        if plan.composite and not coverage.passed:
+            batch_size = max(1, (plan.max_output_tokens - 1200) // 280)
+            initial_targets = list(dict.fromkeys((
+                *coverage.missing_components,
+                *coverage.shallow_components,
+            )))
+            attempts_allowed = max(
+                2,
+                (len(initial_targets) + batch_size - 1) // batch_size + 1,
+            )
+            previous_failures = coverage.failure_count
+            stalled = 0
+            while attempts_allowed > 0 and not coverage.passed:
+                targets = list(dict.fromkeys((
+                    *coverage.missing_components,
+                    *coverage.shallow_components,
+                )))
+                if not targets and coverage.invalid_citations:
+                    targets = ["Fundamentação documental e síntese final"]
+                if not targets:
+                    break
+                batch = targets[:batch_size]
+                addition = await self._grounded_completion(
+                    question,
+                    final_answer,
+                    chunks,
+                    batch,
+                    selected_language,
+                    plan,
+                )
+                final_answer = f"{final_answer.rstrip()}\n\n{addition.lstrip()}"
+                coverage = self.coverage_validator.validate_answer(plan, final_answer, len(chunks))
+                regenerated = True
+                action = "rewrite"
+                attempts_allowed -= 1
+                if coverage.failure_count >= previous_failures:
+                    stalled += 1
+                else:
+                    stalled = 0
+                previous_failures = coverage.failure_count
+                if stalled >= 2:
+                    break
         used_indexes = self.coverage_validator.used_source_indexes(final_answer, len(chunks))
         return {
             "resposta": final_answer,
@@ -158,6 +206,33 @@ class AnswerService:
             "output_tokens_estimated": max(len(final_answer) // 4, 1),
             "regenerated": regenerated,
         }
+
+    async def _create_complete_text(self, arguments: dict, language: str) -> str:
+        """Conclui respostas interrompidas pelo limite técnico antes de publicá-las."""
+        response = await self.client.responses.create(**arguments)
+        parts = [(getattr(response, "output_text", "") or "").strip()]
+        previous_ids: set[str] = set()
+        continuation_count = 0
+        while str(getattr(response, "status", "")) == "incomplete":
+            response_id = str(getattr(response, "id", "") or "")
+            if not response_id or response_id in previous_ids or continuation_count >= 12:
+                raise RuntimeError(answer_message("technical_failure", language))
+            previous_ids.add(response_id)
+            continuation_count += 1
+            response = await self.client.responses.create(
+                model=arguments["model"],
+                previous_response_id=response_id,
+                input=(
+                    "Continue exatamente do ponto interrompido. Não repita nada já escrito. "
+                    "Conclua todos os itens e seções pendentes do plano e faça a verificação interna de completude. "
+                    f"{answer_language_instruction(language)}"
+                ),
+                max_output_tokens=arguments.get("max_output_tokens", 6000),
+            )
+            part = (getattr(response, "output_text", "") or "").strip()
+            if part:
+                parts.append(part)
+        return "\n\n".join(part for part in parts if part).strip()
 
     async def stream_answer(
         self,
@@ -336,9 +411,10 @@ class AnswerService:
             f"[F{number} — {chunk['source']}, {chunk['location']} — componente: {chunk.get('component', 'visão geral')}]\n{chunk['text']}"
             for number, chunk in enumerate(chunks, start=1)
         )
-        response = await self.client.responses.create(
-            model=self.review_model,
-            instructions=(
+        rewritten = await self._create_complete_text(
+            {
+            "model": self.review_model,
+            "instructions": (
                 "Reescreva a resposta usando exclusivamente os trechos fornecidos. Remova toda afirmação "
                 "que não esteja claramente apoiada. Preserve as partes válidas e responda de modo conservador. "
                 "Não use conhecimento externo. Como existem trechos recuperados, não diga que nenhum documento "
@@ -349,17 +425,63 @@ class AnswerService:
                 f"{self._catechesis_instruction(question)}"
                 f"{answer_language_instruction(language)}"
             ),
-            input=(
+            "input": (
                 f"CONSULTA:\n{question}\n\nMOTIVO DA REVISÃO:\n{review_reason}\n\n"
                 f"PLANO:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}\n\n"
                 f"RESPOSTA ORIGINAL:\n{answer}\n\nTRECHOS:\n{context}"
             ),
-            max_output_tokens=plan.max_output_tokens,
+            "max_output_tokens": plan.max_output_tokens,
+            },
+            language,
         )
-        rewritten = (response.output_text or "").strip()
         if not rewritten or self._looks_like_absence_message(rewritten):
             raise RuntimeError(answer_message("technical_failure", language))
         return rewritten
+
+    async def _grounded_completion(
+        self,
+        question: str,
+        current_answer: str,
+        chunks: list[dict],
+        targets: list[str],
+        language: str,
+        plan: ResponsePlan,
+    ) -> str:
+        context = "\n\n".join(
+            f"[F{number} — {chunk['source']}, {chunk['location']} — componente: "
+            f"{chunk.get('component', 'visão geral')}]\n{chunk['text']}"
+            for number, chunk in enumerate(chunks, start=1)
+        )
+        target_text = "; ".join(targets)
+        result = await self._create_complete_text(
+            {
+                "model": self.review_model,
+                "instructions": (
+                    "Complete uma resposta documental já iniciada. Escreva somente as subseções ainda ausentes "
+                    "ou superficiais, sem repetir introdução nem conteúdo já satisfatório. Crie uma subseção própria "
+                    "para cada item solicitado, desenvolva as dimensões sustentadas pelos trechos e use apenas "
+                    "marcações [F1], [F2] etc. existentes. Não use conhecimento externo nem fabrique referências. "
+                    "Se um aspecto específico não estiver comprovado, declare essa limitação dentro da subseção, "
+                    "mas não omita o item. Termine com síntese integradora somente se ela estiver pendente. "
+                    f"{DoctrinalConsistencyValidator.instruction()} "
+                    f"{answer_language_instruction(language)}"
+                ),
+                "input": (
+                    f"CONSULTA:\n{question}\n\nITENS A COMPLETAR:\n{target_text}\n\n"
+                    f"RESPOSTA JÁ PRODUZIDA (não repetir):\n{current_answer}\n\n"
+                    f"PLANO COMPLETO:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}\n\n"
+                    f"TRECHOS AUTORIZADOS:\n{context}"
+                ),
+                "max_output_tokens": min(
+                    plan.max_output_tokens,
+                    max(1800, len(targets) * 300 + 1000),
+                ),
+            },
+            language,
+        )
+        if not result or self._looks_like_absence_message(result):
+            raise RuntimeError(answer_message("technical_failure", language))
+        return result
 
     def _parse_review_response(self, text: str) -> dict | None:
         try:
@@ -493,16 +615,25 @@ class AnswerService:
                 "Responda proporcionalmente: definição, fundamentos principais, explicação e aplicação quando pertinente. "
                 "Não expanda uma consulta simples apenas para preencher uma estrutura."
             )
-        components = "; ".join(plan.active_components)
-        continuation = f" Abra com este aviso: {plan.continuation_message}" if plan.continuation_required else ""
+        components = "; ".join(plan.active_components) or "itens documentados recuperados para o catálogo"
+        scope = (
+            f" Este é um conjunto fechado com {len(plan.active_components)} itens; nenhum pode ser omitido."
+            if plan.closed_set and plan.active_components
+            else f" Escopo obrigatório do catálogo: {plan.catalog_scope}"
+            if plan.catalog_scope
+            else ""
+        )
         return (
-            "A consulta exige resposta composta. Organize, quando adequado, em: 1. Visão geral; 2. Fundamentos; "
-            "3. Divisão ou componentes; 4. Detalhamento de cada componente; 5. Relação entre os componentes; "
-            "6. Aplicação espiritual, catequética ou pastoral; 7. Síntese final. "
+            "A consulta exige resposta composta e exaustiva, não uma visão geral abreviada. Organize, conforme "
+            "a evidência disponível, em: 1. Introdução; 2. Definição geral; 3. Fundamento bíblico; "
+            "4. Catecismo; 5. Magistério; 6. Contexto histórico; 7. Desenvolvimento doutrinal; "
+            "8. Explicação completa de cada item; 9. Exemplos; 10. Aplicações práticas; "
+            "11. Erros comuns e distinções; 12. Síntese final; 13. Sugestões de aprofundamento. "
             f"Componentes obrigatórios nesta resposta: {components}. Cada componente precisa de explicação autônoma, "
-            "equilibrada e proporcional; uma lista ou uma frase genérica por item não basta. "
+            "com subtítulo próprio, equilibrada e proporcional; uma lista ou frase genérica por item não basta. "
             f"Dimensões pertinentes a selecionar, sem aplicação mecânica: {', '.join(plan.dimensions)}."
-            f"{continuation}"
+            f"{scope} Antes de encerrar, verifique silenciosamente se todos os itens, seções e distinções pedidos "
+            "foram incluídos e corrija qualquer omissão."
         )
 
     @staticmethod

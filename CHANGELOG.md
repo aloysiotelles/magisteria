@@ -4,6 +4,16 @@ Todas as alterações relevantes deste projeto serão registradas aqui.
 
 ## Unreleased
 
+## 0.9.1
+
+- Ampliada a taxonomia de listas doutrinais, bíblicas, litúrgicas e históricas, com distinção entre conjuntos fechados e catálogos abertos.
+- Removido o recorte dos primeiros itens: listas canônicas inteiras permanecem no plano, na recuperação e na validação da resposta.
+- Adicionadas busca por taxonomia e tipos documentais, recuperação de referências cruzadas e prioridade editorial oficial.
+- Respostas compostas agora seguem estrutura aprofundada, concluem interrupções técnicas e completam automaticamente itens ausentes.
+- Adicionada recuperação de senha com email, token temporário de uso único e revogação das sessões anteriores.
+- O aviso pastoral aparece somente na abertura do aplicativo, com apresentação equivalente na Web e no Android.
+- Preparado o Android `0.9.1 (901)` para atualização na faixa de testes da Play Console.
+
 ## 0.9.0
 
 - Consultas compostas passam por classificação, decomposição temática e plano de cobertura antes da busca.

@@ -26,12 +26,14 @@ const views = {
   main: element<HTMLElement>('#main-view'),
 };
 const authForm = element<HTMLFormElement>('#auth-form');
+const forgotPasswordForm = element<HTMLFormElement>('#forgot-password-form');
 const questionForm = element<HTMLFormElement>('#question-form');
 const offlineBanner = element<HTMLElement>('#offline-banner');
 const serverBanner = element<HTMLElement>('#server-banner');
 const toast = element<HTMLElement>('#toast');
 const languageSelect = element<HTMLSelectElement>('#language-select');
 const profileSelect = element<HTMLSelectElement>('#profile-select');
+const openingDisclaimer = element<HTMLDialogElement>('#opening-disclaimer-dialog');
 let registerMode = false;
 let currentQuestion = '';
 let currentAnswer = '';
@@ -42,6 +44,11 @@ let busy = false;
 let toastTimer = 0;
 let currentUser: MobileUser | null = null;
 let googleSyncPromise: Promise<void> | null = null;
+
+openingDisclaimer.addEventListener('cancel', (event) => event.preventDefault());
+element<HTMLButtonElement>('#opening-disclaimer-ok').addEventListener('click', () => {
+  openingDisclaimer.close();
+});
 
 function savedLanguage(): AppLanguage {
   const value = localStorage.getItem('magisteria-language');
@@ -176,6 +183,31 @@ authForm.addEventListener('submit', async (event) => {
 
 element('#auth-toggle').addEventListener('click', () => setAuthMode(!registerMode));
 
+element('#forgot-password-button').addEventListener('click', () => {
+  element<HTMLInputElement>('#forgot-password-email').value = element<HTMLInputElement>('#email').value.trim();
+  element('#forgot-password-status').textContent = '';
+  openDialog('#forgot-password-dialog');
+});
+
+forgotPasswordForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (busy || !connected) return;
+  const email = element<HTMLInputElement>('#forgot-password-email').value.trim();
+  const status = element('#forgot-password-status');
+  const button = element<HTMLButtonElement>('#forgot-password-submit');
+  busy = true;
+  button.disabled = true;
+  status.textContent = 'Enviando o link seguro…';
+  try {
+    status.textContent = await api.forgotPassword(email);
+  } catch (error) {
+    status.textContent = friendlyError(error);
+  } finally {
+    busy = false;
+    button.disabled = false;
+  }
+});
+
 function renderSources(sources: AskSource[]): void {
   const list = element<HTMLUListElement>('#source-list');
   list.replaceChildren();
@@ -217,7 +249,9 @@ function handleAskEvent(event: AskEvent): void {
     currentAnswer = event.texto;
     element('#answer-text').textContent = currentAnswer;
   }
-  if (event.tipo === 'metadados') renderSuggestions(event);
+  if (event.tipo === 'metadados') {
+    renderSuggestions(event);
+  }
   if (event.tipo === 'erro') throw new Error(event.mensagem);
 }
 
@@ -844,6 +878,7 @@ async function boot(): Promise<void> {
     console.warn('Recursos nativos indisponíveis no navegador de desenvolvimento.', error);
   }
   await restoreSession();
+  openingDisclaimer.showModal();
 }
 
 void boot();

@@ -13,10 +13,10 @@
 
 ## Próxima versão de teste preparada
 
-- Versão: `0.9.0 (900)`.
+- Versão: `0.9.1 (901)`.
 - Escopo: respostas compostas aprofundadas, recuperação em camadas, histórico privado, cache de evidências, perfis de linguagem e sugestões relacionadas.
-- Publicar primeiro o backend `0.9.0` no Railway e validar `/health` e `/app-version`; somente depois disponibilizar o AAB aos testadores, pois o mecanismo de resposta e o histórico são executados no servidor.
-- Notas pt-BR prontas em `store-assets/android/release-notes-0.9.0-pt-BR.txt`.
+- Publicar primeiro o backend `0.9.1` no Railway e validar `/health`, `/app-version` e a recuperação de senha; somente depois disponibilizar o AAB aos testadores, pois o mecanismo de resposta é executado no servidor.
+- Notas pt-BR prontas em `store-assets/android/release-notes-0.9.1-pt-BR.txt`.
 - O workflow `Android signed release` produz AAB assinado, checksum SHA-256 e mapa de ofuscação quando os quatro segredos da upload key estiverem configurados no ambiente protegido `google-play`.
 
 ## Monetização adiada durante o teste fechado
@@ -77,7 +77,7 @@ O AAB assinado será produzido em `android/app/build/outputs/bundle/release/`. N
 - Publicador: Aloysio Telles de Moraes Netto (conta pessoal).
 - E-mail público de suporte: `aplicativo.magisteria@gmail.com`.
 - URLs públicas validadas: `https://magisteria-production.up.railway.app/privacy`, `/terms`, `/support` e `/account-deletion`.
-- Build de testes atual: `versionName=0.9.0`, `versionCode=900`; incrementar o `versionCode` em cada upload posterior.
+- Build de testes atual: `versionName=0.9.1`, `versionCode=901`; incrementar o `versionCode` em cada upload posterior.
 - Criar upload key offline e ativar Play App Signing.
 - Configurar secrets somente no GitHub Environment protegido se build assinado for automatizado.
 
