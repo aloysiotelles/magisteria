@@ -6,7 +6,7 @@ import re
 
 from openai import AsyncOpenAI
 
-from services.editorial_style import JOHN_PAUL_II_WRITING_STANDARD
+from services.editorial_style import JOHN_PAUL_II_WRITING_STANDARD, MAGISTERIA_LANGUAGE_STANDARD
 from services.localization import (
     answer_language_instruction,
     answer_message,
@@ -20,10 +20,10 @@ from services.response_quality import CoverageValidator, DoctrinalConsistencyVal
 
 ABSOLUTE_RULE = (
     "Responda somente com base nos trechos fornecidos. Se eles sustentarem apenas parte do pedido, "
-    "declare a limitação e responda somente essa parte. A mensagem de ausência documental é reservada "
-    "ao pipeline de recuperação quando nenhum trecho foi localizado; não a use quando recebeu trechos relacionados. "
+    "responda com prudência somente a parte sustentada, sem expor ao usuário o funcionamento interno da pesquisa. "
+    "Quando recebeu trechos relacionados, nunca transforme uma limitação pontual em uma declaração de ausência geral. "
     "Quando a evidência estiver fraca ou parecer insuficiente, dê preferência a aprofundar a resposta com base em A Fé Explicada, "
-    "se houver trechos dessa obra entre os cadastrados, antes de concluir que a base não contém resposta."
+    "se houver trechos dessa obra entre os cadastrados, antes de limitar a explicação."
 )
 NO_DOCUMENTS_MESSAGE = answer_message("no_documents")
 NOT_FOUND_MESSAGE = NO_DOCUMENTS_MESSAGE
@@ -87,10 +87,14 @@ class AnswerService:
         selected_language = normalize_language(language)
         plan = plan or build_response_plan(question, selected_language)
         if not chunks:
+            if self.api_key:
+                return await self._answer_from_general_catholic_teaching(
+                    question, history or [], selected_language, plan
+                )
             return {
                 "resposta": answer_message("no_documents", selected_language),
                 "status_revisao": "no_documents",
-                "motivo_revisao": "Todas as estratégias de recuperação foram executadas sem evidência documental.",
+                "motivo_revisao": "Orientação geral indisponível sem o serviço de redação configurado.",
                 "coverage": self.coverage_validator.validate_retrieval(plan, []).to_dict(),
                 "used_source_indexes": [],
                 "input_tokens_estimated": 0,
@@ -205,6 +209,62 @@ class AnswerService:
             "input_tokens_estimated": self._estimate_input_tokens(question, chunks, history or [], plan),
             "output_tokens_estimated": max(len(final_answer) // 4, 1),
             "regenerated": regenerated,
+        }
+
+    async def _answer_from_general_catholic_teaching(
+        self,
+        question: str,
+        history: list[dict],
+        language: str,
+        plan: ResponsePlan,
+    ) -> dict:
+        """Oferece uma síntese prudente sem revelar detalhes da recuperação documental."""
+        conversation = "\n\n".join(
+            f"USUÁRIO: {turn.get('pergunta', '')}\nMAGISTERIA: {turn.get('resposta', '')}"
+            for turn in history[-3:]
+        ) or "Sem conversa anterior."
+        answer = await self._create_complete_text(
+            {
+                "model": self.model,
+                "instructions": (
+                    "Você é o assistente teológico-pastoral do MAGISTERIA. Responda à luz da doutrina católica, "
+                    "limitando-se a ensinamentos gerais, estáveis e de alta confiança. Quando não puder sustentar com "
+                    "segurança uma afirmação específica, permaneça nos princípios doutrinais seguros e formule-a com "
+                    "prudência. Não diga que não encontrou conteúdo, que um documento não está disponível ou que a "
+                    "pesquisa foi insuficiente. Não exponha qualquer detalhe técnico do funcionamento do aplicativo. "
+                    "Não invente citações literais, números de parágrafos, cânones, referências bíblicas, nomes de "
+                    "documentos específicos ou atribuições magisteriais. Você pode mencionar de modo geral a Sagrada "
+                    "Escritura, a Tradição, o Magistério e o Catecismo quando isso ajudar a situar o ensinamento, sem "
+                    "simular uma referência precisa. Responda integralmente ao que for possível afirmar com segurança. "
+                    f"Adapte a linguagem ao perfil informado: {plan.profile_instruction}. "
+                    f"{self._structure_instruction(plan)} "
+                    f"{self._format_instruction(question)} "
+                    f"{localized_writing_standard(JOHN_PAUL_II_WRITING_STANDARD, language)} "
+                    f"{localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, language)} "
+                    f"{self._catechesis_instruction(question)}"
+                    f"{answer_language_instruction(language)}"
+                ),
+                "input": (
+                    f"HISTÓRICO DA CONVERSA:\n{conversation}\n\n"
+                    f"PERGUNTA ATUAL:\n{question}\n\n"
+                    f"PLANO INTERNO DE COBERTURA:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}"
+                ),
+                "max_output_tokens": plan.max_output_tokens,
+            },
+            language,
+        )
+        if not answer:
+            raise RuntimeError(answer_message("technical_failure", language))
+        coverage = self.coverage_validator.validate_answer(plan, answer, 0)
+        return {
+            "resposta": answer,
+            "status_revisao": "general_guidance",
+            "motivo_revisao": "Síntese pastoral prudente baseada nos ensinamentos gerais da Igreja.",
+            "coverage": coverage.to_dict(),
+            "used_source_indexes": [],
+            "input_tokens_estimated": self._estimate_input_tokens(question, [], history, plan),
+            "output_tokens_estimated": max(len(answer) // 4, 1),
+            "regenerated": False,
         }
 
     async def _create_complete_text(self, arguments: dict, language: str) -> str:
@@ -330,6 +390,8 @@ class AnswerService:
             f" Qualquer suggested_answer deve obedecer a esta regra: {answer_language_instruction(selected_language)}"
             f" Verifique também a forma segundo esta regra, sem bloquear uma resposta factual apenas por estilo: "
             f"{localized_writing_standard(JOHN_PAUL_II_WRITING_STANDARD, selected_language)}"
+            f" {localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, selected_language)}"
+            f" {self._format_instruction(question)}"
             f" {self._catechesis_instruction(question)}"
         )
         response = await self.client.responses.create(
@@ -422,6 +484,8 @@ class AnswerService:
                 "Cumpra o plano de cobertura, desenvolva cada componente ativo e use marcações [F1], [F2] etc. "
                 "somente quando a afirmação estiver apoiada no trecho correspondente. Nunca invente uma marcação. "
                 "Entregue somente a resposta reescrita, sem comentários sobre a revisão. "
+                f"{localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, language)} "
+                f"{self._format_instruction(question)} "
                 f"{self._catechesis_instruction(question)}"
                 f"{answer_language_instruction(language)}"
             ),
@@ -464,6 +528,8 @@ class AnswerService:
                     "Se um aspecto específico não estiver comprovado, declare essa limitação dentro da subseção, "
                     "mas não omita o item. Termine com síntese integradora somente se ela estiver pendente. "
                     f"{DoctrinalConsistencyValidator.instruction()} "
+                    f"{localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, language)} "
+                    f"{self._format_instruction(question)} "
                     f"{answer_language_instruction(language)}"
                 ),
                 "input": (
@@ -551,6 +617,7 @@ class AnswerService:
             for number, chunk in enumerate(style_chunks or [], start=1)
         ) or "Sem amostras especificas de homilias para esta pergunta."
         catechesis_instruction = self._catechesis_instruction(question)
+        format_instruction = self._format_instruction(question)
         thematic_instruction = ""
         if analysis.query_type in {QueryType.TERM, QueryType.PHRASE}:
             thematic_instruction = (
@@ -571,18 +638,21 @@ class AnswerService:
                 "Não use memória, conhecimento geral, inferências externas ou pesquisa na internet. "
                 "Não mencione fontes que não estejam nos trechos. "
                 f"{localized_writing_standard(JOHN_PAUL_II_WRITING_STANDARD, language)} "
+                f"{localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, language)} "
                 "Use as AMOSTRAS DE ESTILO DAS HOMILIAS apenas para calibrar ritmo e cadência; não retire delas "
                 "afirmações factuais para responder se elas não estiverem também apoiadas nos TRECHOS CADASTRADOS. "
                 "Comece diretamente pela resposta. Explique termos religiosos com simplicidade quando necessário. "
+                f"{format_instruction} "
                 f"{catechesis_instruction}"
                 "Quando a pergunta pedir o significado ou a definição de um termo e os trechos trouxerem uma seção, "
                 "um título ou uma frase que o defina explicitamente, responda a partir dessa definição; nesse caso, "
                 "é incorreto alegar que a informação não foi encontrada. "
-                "Prefira parágrafos curtos e use listas e títulos numerados quando facilitarem a cobertura do plano. "
+                "Prefira parágrafos claros e use listas e títulos somente quando facilitarem a compreensão do conjunto. "
                 "Use texto simples, sem Markdown, asteriscos ou títulos com cerquilhas. "
                 "Use a ordem dos trechos como hierarquia de autoridade para elaborar a resposta, mas entregue uma única "
-                "síntese consolidada. Não divida a resposta por documento, não anuncie nomes de obras, não escreva frases "
-                "como 'segundo o Catecismo' e não repita a mesma ideia porque ela apareceu em fontes diferentes. "
+                "síntese consolidada. Não divida a resposta por documento e não repita a mesma ideia porque ela apareceu "
+                "em fontes diferentes. Mencione as fontes com naturalidade quando isso ajudar a explicação, sem enumerar "
+                "documentos a cada parágrafo. "
                 "Produza um texto fluido e tão didático quanto possível: apresente primeiro a ideia central, desenvolva os "
                 "conceitos em sequência lógica, explique palavras técnicas em linguagem simples e conclua com uma síntese "
                 "prática. Use transições naturais entre os parágrafos. "
@@ -590,10 +660,11 @@ class AnswerService:
                 "e o texto de versículos pertinentes; introduções e comentários bíblicos não são citações. Transcreva "
                 "apenas o que estiver no trecho e use o nome do livro indicado na localização; nunca complete uma citação "
                 "de memória. "
-                "Não informe nem liste as fontes no corpo além das marcações de apoio. "
+                "Não crie uma bibliografia nem uma lista extensa de fontes no corpo; atribua as fontes principais com "
+                "naturalidade e deixe a identificação completa para a interface. "
                 "Após afirmações centrais, use marcações [F1], [F2] etc. correspondentes aos trechos fornecidos. "
                 "Nunca use número de fonte inexistente e nunca fabrique parágrafo, cânon ou referência. A interface "
-                "apresentará a identificação completa das fontes ao final; não crie uma bibliografia no corpo. "
+                "apresentará a identificação completa das fontes ao final. "
                 f"{DoctrinalConsistencyValidator.instruction()} "
                 "O histórico serve apenas para compreender perguntas de continuidade: toda afirmação da nova resposta "
                 "continua obrigada a estar apoiada nos TRECHOS CADASTRADOS desta solicitação. "
@@ -612,8 +683,9 @@ class AnswerService:
     def _structure_instruction(plan: ResponsePlan) -> str:
         if not plan.composite:
             return (
-                "Responda proporcionalmente: definição, fundamentos principais, explicação e aplicação quando pertinente. "
-                "Não expanda uma consulta simples apenas para preencher uma estrutura."
+                "Responda proporcionalmente, com começo, desenvolvimento e conclusão: apresente a ideia central, os "
+                "fundamentos principais, a explicação e a aplicação quando pertinente. Não expanda uma consulta simples "
+                "apenas para preencher uma estrutura."
             )
         components = "; ".join(plan.active_components) or "itens documentados recuperados para o catálogo"
         scope = (
@@ -624,17 +696,34 @@ class AnswerService:
             else ""
         )
         return (
-            "A consulta exige resposta composta e exaustiva, não uma visão geral abreviada. Organize, conforme "
-            "a evidência disponível, em: 1. Introdução; 2. Definição geral; 3. Fundamento bíblico; "
-            "4. Catecismo; 5. Magistério; 6. Contexto histórico; 7. Desenvolvimento doutrinal; "
-            "8. Explicação completa de cada item; 9. Exemplos; 10. Aplicações práticas; "
-            "11. Erros comuns e distinções; 12. Síntese final; 13. Sugestões de aprofundamento. "
+            "A consulta exige uma resposta composta e completa, não uma visão geral abreviada. Conduza o texto como uma "
+            "aula bem organizada: introduza o tema, desenvolva os fundamentos e as distinções pertinentes, explique todos "
+            "os itens pedidos e conclua reunindo o sentido doutrinal e sua importância para a vida cristã. Se títulos ou "
+            "uma lista inicial ajudarem a orientação, use-os com moderação e desenvolva cada item também em parágrafos. "
             f"Componentes obrigatórios nesta resposta: {components}. Cada componente precisa de explicação autônoma, "
-            "com subtítulo próprio, equilibrada e proporcional; uma lista ou frase genérica por item não basta. "
+            "equilibrada e proporcional; uma lista ou frase genérica por item não basta. "
             f"Dimensões pertinentes a selecionar, sem aplicação mecânica: {', '.join(plan.dimensions)}."
             f"{scope} Antes de encerrar, verifique silenciosamente se todos os itens, seções e distinções pedidos "
             "foram incluídos e corrija qualquer omissão."
         )
+
+    @staticmethod
+    def _format_instruction(question: str) -> str:
+        normalized = question.casefold().translate(str.maketrans(
+            "áàãâäéèêëíìîïóòõôöúùûüç",
+            "aaaaaeeeeiiiiooooouuuuc",
+        ))
+        if re.search(r"\b(homilia|pregacao|sermao)\b", normalized):
+            return (
+                "Como o gênero pedido é homilético, use linguagem proclamativa, espiritual e pastoral, com unidade "
+                "temática e apelo à vida cristã; não escreva como artigo acadêmico nem como relatório."
+            )
+        if re.search(r"\b(formacao|encontro formativo|aula)\b", normalized):
+            return (
+                "Como o gênero pedido é formativo, apresente a exposição de modo progressivo, com exemplos, "
+                "aplicações práticas e síntese final, preservando a continuidade entre as partes."
+            )
+        return ""
 
     @staticmethod
     def _estimate_input_tokens(

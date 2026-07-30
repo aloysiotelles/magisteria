@@ -458,13 +458,51 @@ def test_answer_prompt_requires_consolidated_text():
     instructions = request["instructions"]
 
     assert "uma única síntese consolidada" in instructions
-    assert "Não informe nem liste as fontes no corpo" in instructions
+    assert "atribua as fontes principais com naturalidade" in instructions
     assert "A Fé Explicada" in instructions
     assert "PADRÃO HOMILÉTICO DE SÃO JOÃO PAULO II" in instructions
+    assert "DIRETRIZES DE LINGUAGEM, FLUIDEZ E APRESENTAÇÃO DO MAGISTERIA" in instructions
+    assert "Não transforme toda a resposta em tópicos" in instructions
+    assert "nunca empregue metalinguagem de funcionamento interno" in instructions
+    assert "revise silenciosamente" in instructions
     assert "português brasileiro contemporâneo" in instructions
     assert "O padrão rege somente a forma" in instructions
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in instructions
     assert "AMOSTRAS DE ESTILO DAS HOMILIAS" in request["input"]
+
+
+def test_no_direct_passage_uses_prudent_general_catholic_teaching(monkeypatch):
+    class FakeResponses:
+        def __init__(self):
+            self.calls = []
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                output_text=(
+                    "À luz da doutrina católica, a esperança nasce da confiança em Deus e orienta a vida "
+                    "cristã para a fidelidade, a oração e a caridade."
+                ),
+                status="completed",
+            )
+
+    fake_responses = FakeResponses()
+    monkeypatch.setattr(
+        "services.answer_service.AsyncOpenAI",
+        lambda api_key: SimpleNamespace(responses=fake_responses),
+    )
+    service = AnswerService("chave", "modelo")
+
+    result = asyncio.run(service.answer_with_review("Explique a esperança cristã.", []))
+
+    assert result["status_revisao"] == "general_guidance"
+    assert result["used_source_indexes"] == []
+    assert "base documental" not in result["resposta"].casefold()
+    instructions = fake_responses.calls[0]["instructions"]
+    assert "ensinamentos gerais, estáveis e de alta confiança" in instructions
+    assert "Não invente citações literais" in instructions
+    assert "não encontrou conteúdo" in instructions
+    assert "DIRETRIZES DE LINGUAGEM, FLUIDEZ E APRESENTAÇÃO DO MAGISTERIA" in instructions
 
 
 def test_catechesis_prompt_goes_directly_to_topic_and_adapts_examples_to_audience():
@@ -484,6 +522,19 @@ def test_catechesis_prompt_goes_directly_to_topic_and_adapts_examples_to_audienc
     assert service._is_catechesis_request("Prepare uma catequese sobre o perdão para adolescentes.")
     assert service._is_catechesis_request("Elabore uma catequese sobre a Eucaristia.")
     assert not service._is_catechesis_request("O que é uma catequese?")
+
+
+def test_requested_genre_uses_pastoral_not_report_style():
+    service = AnswerService("chave", "modelo")
+    chunks = [{"source": "Evangelho.txt", "location": "página 1", "text": "Trecho", "score": 1.0}]
+
+    homily = service._request_arguments("Prepare uma homilia sobre a esperança.", chunks, [])
+    formation = service._request_arguments("Faça uma formação para catequistas sobre a Eucaristia.", chunks, [])
+
+    assert "linguagem proclamativa, espiritual e pastoral" in homily["instructions"]
+    assert "não escreva como artigo acadêmico nem como relatório" in homily["instructions"]
+    assert "exposição de modo progressivo" in formation["instructions"]
+    assert "aplicações práticas e síntese final" in formation["instructions"]
 
 
 def test_homily_corpus_profile_and_presentation_standard():
@@ -1389,6 +1440,8 @@ def test_localized_no_document_messages_do_not_require_api_key():
 
     assert english["resposta"] == answer_message("no_documents", "en")
     assert spanish["resposta"] == answer_message("no_documents", "es")
+    assert "document database" not in english["resposta"]
+    assert "base documental" not in spanish["resposta"]
 
 
 def test_foreign_answer_prompt_requires_only_the_selected_language():

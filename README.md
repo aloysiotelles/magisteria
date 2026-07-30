@@ -1,10 +1,10 @@
 # MAGISTERIA
 
-Aplicativo web de pesquisa pastoral em uma base documental fechada. O sistema lê arquivos locais, recupera os trechos mais relevantes e pede à IA que responda **somente** com base nesses trechos, exibindo as fontes utilizadas.
+Aplicativo web de pesquisa pastoral católica. O sistema lê arquivos locais, recupera os trechos mais relevantes e redige respostas fundamentadas, exibindo as fontes utilizadas. Quando não existe uma passagem direta, oferece apenas uma síntese prudente dos ensinamentos gerais da Igreja, sem inventar referências específicas.
 
 ## O que esta versão faz
 
-A versão 0.9.1 amplia a profundidade e a cobertura integral de respostas compostas, adiciona recuperação segura de senha e mantém o aviso pastoral somente na abertura. O histórico privado no Android, o cache semântico de evidências e a interface poliglota em português, inglês e espanhol permanecem preservados. Perguntas feitas nos idiomas estrangeiros são convertidas para português antes da recuperação; somente a resposta final e os materiais derivados são redigidos no idioma escolhido.
+A versão 0.9.2 torna a linguagem mais humana, fluida, acolhedora e pastoral sem reduzir a profundidade doutrinária. Catequeses, formações e homilias recebem tratamento próprio; estruturas e fontes são usadas com moderação; e respostas sem passagem direta permanecem prudentes, sem expor detalhes técnicos nem inventar referências. A profundidade das respostas compostas, a recuperação segura de senha, o histórico privado no Android e a interface poliglota permanecem preservados.
 
 - aceita arquivos PDF, DOCX, TXT e Markdown;
 - permite escolher português, inglês ou espanhol na barra superior e preserva a escolha no navegador;
@@ -28,12 +28,12 @@ A versão 0.9.1 amplia a profundidade e a cobertura integral de respostas compos
 - aplica às respostas, roteiros e slides um padrão editorial sintetizado da análise integral das homilias de São João Paulo II cadastradas;
 - exibe parágrafos do Catecismo e dos compêndios, referências bíblicas por livro/capítulo/versículo e referências finais em formato ABNT;
 - mantém as respostas anteriores visíveis durante a continuidade da conversa;
-- informa quando a base não contém evidência suficiente;
+- oferece orientação doutrinal geral e prudente quando não há uma passagem direta, sem inventar citações ou referências;
 - permite ao Admin criar cupons promocionais com validade de um dia, uma semana ou um mês e revogar individualmente acessos concedidos por cupom;
 - não realiza pesquisa na internet nem usa ferramentas de busca aberta;
 - oferece as rotas `GET /`, `POST /perguntar`, `POST /indexar` e `GET /status`.
 
-> A API de IA é acessada apenas para redigir a resposta a partir dos trechos locais enviados no contexto. O aplicativo não habilita busca web, ferramentas externas ou conhecimento documental fora da pasta `Documentos`.
+> A API de IA redige prioritariamente a partir dos trechos locais enviados no contexto. Sem passagem direta, pode formular somente uma orientação católica geral e prudente, sem pesquisa web, ferramentas externas ou referências específicas não confirmadas.
 
 ## Início simples no Windows
 
@@ -99,9 +99,9 @@ Nunca publique o arquivo `.env`. Ele já está protegido pelo `.gitignore`.
 5. `services/vector_store.py` executa busca exata, variantes seguras, expansão controlada, título/metadados, orientação por índices, âncoras nominais e fallback em toda a base.
 6. Os candidatos são deduplicados pelo ID do chunk e fundidos por RRF. Filtros de fonte inativa continuam valendo; casamento lexical, título e remissão são protegidos contra corte arbitrário.
 7. A seleção final respeita a hierarquia editorial e diversifica documentos antes de montar o contexto.
-8. `services/answer_service.py` gera exclusivamente a partir dos chunks e redige a saída no idioma selecionado.
+8. `services/answer_service.py` gera prioritariamente a partir dos trechos e redige a saída no idioma selecionado; sem passagem direta, limita-se a ensinamentos católicos gerais e seguros.
 9. O revisor pode aprovar ou solicitar reescrita fundamentada, sempre preservando o idioma final. Ele não pode converter chunks existentes em “ausência documental”.
-10. Ausência real, tema amplo, baixa confiança e falha técnica usam estados e mensagens localizados.
+10. Tema amplo, baixa confiança e falha técnica usam estados e mensagens localizados; a ausência de passagem direta não é exposta como detalhe técnico ao usuário.
 11. `services/rag_diagnostics.py` registra somente métricas tipadas, contagens, scores, tokens aproximados, estado e decisão do revisor. Perguntas, nomes de fontes, filtros livres, chunks e motivos textuais não são persistidos; os registros expiram pelo TTL configurado.
 
 Administradores acessam **Diagnóstico RAG** na interface e podem repetir uma recuperação sem consumir franquia. A matriz permanente está em `tests/fixtures/catholic_single_term_queries.json`. Para auditar a cobertura da base real:
@@ -265,6 +265,6 @@ docker run --rm -p 8000:8000 --env-file .env magister-ia
 
 Abra `http://localhost:8000/health` e espere `{"status":"ok", ...}`. O endpoint `/status` informa o andamento da indexacao e eventuais erros de leitura.
 
-## Regra absoluta de resposta
+## Regra de resposta
 
-> Responda somente com base nos trechos fornecidos. Se sustentarem apenas parte do pedido, declare a limitação e responda somente essa parte. A ausência documental só pode ser declarada pelo pipeline quando nenhuma estratégia localizar chunks.
+> Responda prioritariamente com base nos trechos fornecidos, preservando precisão, completude e linguagem pastoral. Sem passagem direta, limite-se a ensinamentos gerais da Igreja que possam ser apresentados com segurança, sem inventar citações, números ou documentos e sem expor o funcionamento interno da pesquisa.

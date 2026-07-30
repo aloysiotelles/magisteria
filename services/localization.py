@@ -15,22 +15,22 @@ LANGUAGE_NAMES: dict[LanguageCode, str] = {
 
 ANSWER_MESSAGES: dict[str, dict[LanguageCode, str]] = {
     "no_documents": {
-        "pt-BR": "Não encontrei conteúdo correspondente na base documental.",
-        "en": "I could not find corresponding content in the document database.",
-        "es": "No encontré contenido correspondiente en la base documental.",
+        "pt-BR": "À luz da doutrina católica, este tema deve ser tratado com prudência e sem atribuir referências específicas não confirmadas.",
+        "en": "In light of Catholic doctrine, this subject should be treated prudently and without attributing unconfirmed specific references.",
+        "es": "A la luz de la doctrina católica, este tema debe tratarse con prudencia y sin atribuir referencias específicas no confirmadas.",
     },
     "low_confidence": {
         "pt-BR": (
-            "Encontrei conteúdos relacionados, embora a correspondência não seja totalmente específica. "
-            "A resposta abaixo apresenta os pontos mais próximos encontrados na base."
+            "Segundo as fontes consultadas, é possível apresentar com segurança os aspectos centrais do tema. "
+            "Os pontos que exigem maior precisão serão formulados com a devida prudência."
         ),
         "en": (
-            "I found related content, although the match is not entirely specific. "
-            "The answer below presents the closest points found in the database."
+            "According to the sources consulted, the central aspects of the subject can be presented safely. "
+            "Points requiring greater precision will be stated with due prudence."
         ),
         "es": (
-            "Encontré contenidos relacionados, aunque la coincidencia no es totalmente específica. "
-            "La respuesta a continuación presenta los puntos más cercanos encontrados en la base."
+            "Según las fuentes consultadas, los aspectos centrales del tema pueden presentarse con seguridad. "
+            "Los puntos que requieran mayor precisión se formularán con la debida prudencia."
         ),
     },
     "broad_topic": {

@@ -4,6 +4,15 @@ Todas as alterações relevantes deste projeto serão registradas aqui.
 
 ## Unreleased
 
+## 0.9.2
+
+- Incorporadas diretrizes permanentes de linguagem humana, fluida, acolhedora e pastoral, sem reduzir a precisão doutrinária ou a cobertura solicitada.
+- Respostas agora adaptam com mais clareza o gênero pedido — catequese, formação ou homilia — e evitam estruturas rígidas semelhantes a relatórios.
+- Fontes passam a ser mencionadas com naturalidade, sem repetição excessiva nem referências inventadas.
+- Quando não há uma passagem direta, o MAGISTERIA oferece uma síntese prudente dos ensinamentos gerais da Igreja sem expor detalhes técnicos da pesquisa.
+- A revisão automática também verifica público, fluidez, legibilidade, completude e ausência de metalinguagem interna.
+- Preparado o Android `0.9.2 (902)` para atualização na faixa de testes da Play Console.
+
 ## 0.9.1
 
 - Ampliada a taxonomia de listas doutrinais, bíblicas, litúrgicas e históricas, com distinção entre conjuntos fechados e catálogos abertos.

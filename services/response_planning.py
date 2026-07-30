@@ -9,7 +9,7 @@ from services.catholic_taxonomy import TAXONOMY_VERSION, TopicSpec, classify_cat
 from services.query_analysis import QueryType, analyze_query
 
 
-RESPONSE_STRATEGY_VERSION = "exhaustive-layered-rag-2"
+RESPONSE_STRATEGY_VERSION = "pastoral-language-3"
 
 
 class DepthLevel(StrEnum):
@@ -35,16 +35,16 @@ class IntentKind(StrEnum):
 
 
 PROFILE_INSTRUCTIONS = {
-    "crianca": "linguagem concreta, frases curtas e exemplos seguros para uma criança",
-    "adolescente": "linguagem clara para adolescente, sem infantilização",
+    "crianca": "linguagem simples, concreta e breve, com exemplos seguros do cotidiano de uma criança",
+    "adolescente": "linguagem direta e próxima, sem infantilização, relacionada aos desafios reais de adolescentes e jovens",
     "catequizando": "linguagem catequética acessível e explicação de termos técnicos",
     "adulto_iniciacao": "linguagem acessível a adulto em iniciação cristã",
-    "catequista": "linguagem clara com utilidade catequética e distinções doutrinais",
+    "catequista": "conteúdo didático, organizado e útil para transmitir a fé, com distinções doutrinais explicadas",
     "agente_pastoral": "linguagem pastoral clara, com aplicações prudentes",
-    "estudante_teologia": "linguagem acadêmica moderada e distinções técnicas explícitas",
+    "estudante_teologia": "linguagem teológica aprofundada, com conceitos, distinções e referências, sem perder a fluidez",
     "clerigo": "linguagem teológico-pastoral precisa e concisa",
     "pesquisador": "linguagem técnica, referências precisas e distinção de graus de autoridade",
-    "adulto_leigo": "linguagem acessível a um adulto leigo, explicando termos técnicos",
+    "adulto_leigo": "linguagem clara, madura e pastoral, acessível a um adulto católico sem formação teológica especializada",
 }
 
 
