@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -126,7 +127,11 @@ def test_catena_metadata_migration_rolls_back_without_deleting_indexed_documents
     )
     store = LocalVectorStore(documents, tmp_path / "indice.sqlite", 220, 25)
     store.index_documents()
-    rollback = Path(__file__).resolve().parents[1] / "vector_migrations" / "0001_catena_chunk_metadata.down.sql"
+    rollback = (
+        Path(__file__).resolve().parents[1]
+        / "vector_migrations"
+        / "0002_catena_chunk_metadata_isolation.down.sql"
+    )
 
     with store._connect() as db:
         chunk_count_before = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -134,8 +139,28 @@ def test_catena_metadata_migration_rolls_back_without_deleting_indexed_documents
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         chunk_count_after = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
 
-    assert "chunk_metadata" not in tables
+    assert "catena_chunk_metadata" not in tables
     assert chunk_count_before == chunk_count_after > 0
+
+
+def test_catena_metadata_migration_preserves_legacy_chunk_metadata_table(tmp_path: Path):
+    index_file = tmp_path / "indice.sqlite"
+    with sqlite3.connect(index_file) as db:
+        db.execute("CREATE TABLE chunk_metadata (chunk_id TEXT PRIMARY KEY, legacy_value TEXT)")
+        db.execute("INSERT INTO chunk_metadata VALUES ('legacy-1', 'preservar')")
+
+    store = LocalVectorStore(tmp_path / "Documentos", index_file, 220, 25)
+
+    with store._connect() as db:
+        legacy = db.execute(
+            "SELECT legacy_value FROM chunk_metadata WHERE chunk_id = 'legacy-1'"
+        ).fetchone()[0]
+        catena_table = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catena_chunk_metadata'"
+        ).fetchone()
+
+    assert legacy == "preservar"
+    assert catena_table is not None
 
 
 class GospelFakeVectorStore:

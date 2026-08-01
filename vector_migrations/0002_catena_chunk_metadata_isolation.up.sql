@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS chunk_metadata (
+CREATE TABLE IF NOT EXISTS catena_chunk_metadata (
     chunk_id TEXT PRIMARY KEY,
     collection TEXT NOT NULL DEFAULT '',
     work TEXT NOT NULL DEFAULT '',
@@ -20,11 +20,11 @@ CREATE TABLE IF NOT EXISTS chunk_metadata (
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
-CREATE INDEX IF NOT EXISTS idx_chunk_metadata_collection
-    ON chunk_metadata(collection, gospel, chapter);
-CREATE INDEX IF NOT EXISTS idx_chunk_metadata_passage
-    ON chunk_metadata(gospel, chapter, verse_start, verse_end);
-CREATE INDEX IF NOT EXISTS idx_chunk_metadata_author
-    ON chunk_metadata(patristic_author);
-CREATE INDEX IF NOT EXISTS idx_chunk_metadata_document_sequence
-    ON chunk_metadata(document_id, chunk_sequence);
+CREATE INDEX IF NOT EXISTS idx_catena_chunk_metadata_collection
+    ON catena_chunk_metadata(collection, gospel, chapter);
+CREATE INDEX IF NOT EXISTS idx_catena_chunk_metadata_passage
+    ON catena_chunk_metadata(gospel, chapter, verse_start, verse_end);
+CREATE INDEX IF NOT EXISTS idx_catena_chunk_metadata_author
+    ON catena_chunk_metadata(patristic_author);
+CREATE INDEX IF NOT EXISTS idx_catena_chunk_metadata_document_sequence
+    ON catena_chunk_metadata(document_id, chunk_sequence);

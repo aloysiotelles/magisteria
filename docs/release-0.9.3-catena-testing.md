@@ -12,7 +12,7 @@
 
 ## Migração e rollback
 
-- A migração do índice cria apenas a tabela auxiliar `chunk_metadata` e seus índices; o rollback está em `vector_migrations/0001_catena_chunk_metadata.down.sql`.
+- A migração `0002_catena_chunk_metadata_isolation` cria apenas a tabela auxiliar `catena_chunk_metadata` e seus índices; o nome específico evita colisões com tabelas legadas e há um rollback correspondente.
 - Na primeira inicialização, somente o arquivo da Catena é resegmentado para a versão `catena-structured-1`; os demais documentos inalterados são reutilizados.
 - A versão da política invalida entradas antigas do cache sem apagar histórico, usuários, assinaturas ou documentos.
 - Em rollback, publicar a versão anterior do backend. Não limpar o volume e não reduzir o `versionCode` de um AAB já enviado.

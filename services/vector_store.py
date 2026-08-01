@@ -220,7 +220,7 @@ class LocalVectorStore:
             changed = bool(set(known) - set(names))
             for removed in set(known) - set(names):
                 document_id = hashlib.sha256(removed.encode("utf-8")).hexdigest()[:20]
-                db.execute("DELETE FROM chunk_metadata WHERE document_id = ?", (document_id,))
+                db.execute("DELETE FROM catena_chunk_metadata WHERE document_id = ?", (document_id,))
                 db.execute("DELETE FROM chunks WHERE source = ?", (removed,))
                 db.execute("DELETE FROM files WHERE source = ?", (removed,))
             for position, path in enumerate(documents, 1):
@@ -236,7 +236,7 @@ class LocalVectorStore:
                 if progress_callback:
                     progress_callback(position - 1, len(documents), f"Lendo {position} de {len(documents)}: {path.name}")
                 document_id = hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
-                db.execute("DELETE FROM chunk_metadata WHERE document_id = ?", (document_id,))
+                db.execute("DELETE FROM catena_chunk_metadata WHERE document_id = ?", (document_id,))
                 db.execute("DELETE FROM chunks WHERE source = ?", (source,))
                 db.execute("DELETE FROM errors WHERE source = ?", (source,))
                 try:
@@ -320,7 +320,7 @@ class LocalVectorStore:
         for start in range(0, len(metadata_rows), 100):
             db.executemany(
                 """
-                INSERT OR REPLACE INTO chunk_metadata(
+                INSERT OR REPLACE INTO catena_chunk_metadata(
                     chunk_id,collection,work,compiler,gospel,chapter,verse_start,verse_end,
                     pericope,patristic_author,patristic_authors_json,source_work,
                     attributions_json,language,document_id,previous_chunk_id,next_chunk_id,
@@ -538,7 +538,7 @@ class LocalVectorStore:
             collection = filters.get("collection")
             if collection:
                 collection_exists = db.execute(
-                    "SELECT 1 FROM chunk_metadata WHERE collection = ? LIMIT 1",
+                    "SELECT 1 FROM catena_chunk_metadata WHERE collection = ? LIMIT 1",
                     (collection,),
                 ).fetchone() is not None
                 strict = collection_exists and any(
@@ -546,11 +546,11 @@ class LocalVectorStore:
                     for key in ("gospel", "chapter", "pericope", "patristic_author", "verse_start", "verse_end")
                 )
             else:
-                strict = db.execute("SELECT 1 FROM chunk_metadata LIMIT 1").fetchone() is not None
+                strict = db.execute("SELECT 1 FROM catena_chunk_metadata LIMIT 1").fetchone() is not None
             rows = db.execute(
                 """
                 SELECT c.id,c.source,c.location,c.text,0.0 rank
-                FROM chunks AS c JOIN chunk_metadata AS cm ON cm.chunk_id = c.id
+                FROM chunks AS c JOIN catena_chunk_metadata AS cm ON cm.chunk_id = c.id
                 WHERE """ + where + " ORDER BY cm.chunk_sequence LIMIT ?",
                 (*parameters, min(max(int(limit), 1), 5000)),
             ).fetchall()
@@ -770,7 +770,7 @@ class LocalVectorStore:
                 batch = identifiers[start:start + 400]
                 placeholders = ",".join("?" for _ in batch)
                 rows = db.execute(
-                    f"SELECT * FROM chunk_metadata WHERE chunk_id IN ({placeholders})",
+                    f"SELECT * FROM catena_chunk_metadata WHERE chunk_id IN ({placeholders})",
                     batch,
                 ).fetchall()
                 for row in rows:
@@ -804,7 +804,7 @@ class LocalVectorStore:
                 batch = identifiers[start:start + 300]
                 placeholders = ",".join("?" for _ in batch)
                 anchors = db.execute(
-                    f"SELECT document_id,chunk_sequence FROM chunk_metadata WHERE chunk_id IN ({placeholders})",
+                    f"SELECT document_id,chunk_sequence FROM catena_chunk_metadata WHERE chunk_id IN ({placeholders})",
                     batch,
                 ).fetchall()
                 for anchor in anchors:
@@ -823,7 +823,7 @@ class LocalVectorStore:
                     rows = db.execute(
                         """
                         SELECT c.id,c.source,c.location,c.text,0.0 rank
-                        FROM chunks AS c JOIN chunk_metadata AS cm ON cm.chunk_id = c.id
+                        FROM chunks AS c JOIN catena_chunk_metadata AS cm ON cm.chunk_id = c.id
                         WHERE cm.document_id = ? AND cm.chunk_sequence IN ("""
                         + placeholders + ")" + collection_clause + " ORDER BY cm.chunk_sequence",
                         parameters,
@@ -851,7 +851,7 @@ class LocalVectorStore:
                 """
                 SELECT c.source,f.size,f.mtime_ns,COUNT(*) AS chunk_count
                 FROM chunks AS c
-                JOIN chunk_metadata AS cm ON cm.chunk_id = c.id
+                JOIN catena_chunk_metadata AS cm ON cm.chunk_id = c.id
                 LEFT JOIN files AS f ON f.source = c.source
                 WHERE cm.collection = ?
                 GROUP BY c.source,f.size,f.mtime_ns
@@ -1275,11 +1275,11 @@ class LocalVectorStore:
             documents = db.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             chunks = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             catena_chunks = db.execute(
-                "SELECT COUNT(*) FROM chunk_metadata WHERE collection = ?",
+                "SELECT COUNT(*) FROM catena_chunk_metadata WHERE collection = ?",
                 (CATENA_COLLECTION,),
             ).fetchone()[0]
             catena_documents = db.execute(
-                "SELECT COUNT(DISTINCT document_id) FROM chunk_metadata WHERE collection = ?",
+                "SELECT COUNT(DISTINCT document_id) FROM catena_chunk_metadata WHERE collection = ?",
                 (CATENA_COLLECTION,),
             ).fetchone()[0]
             updated = db.execute("SELECT value FROM metadata WHERE key='updated_at'").fetchone()
