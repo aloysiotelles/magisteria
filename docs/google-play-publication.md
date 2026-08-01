@@ -13,10 +13,10 @@
 
 ## Próxima versão de teste preparada
 
-- Versão: `0.9.2 (902)`.
-- Escopo: linguagem doutrinária mais humana e fluida, adaptação pastoral por público e gênero, fontes naturais e orientação prudente sem passagem direta.
-- Publicar primeiro o backend `0.9.2` no Railway e validar `/health`, `/app-version`, os totais da base e o documento de dogmas; somente depois disponibilizar o AAB aos testadores, pois o mecanismo de resposta é executado no servidor.
-- Notas pt-BR prontas em `store-assets/android/release-notes-0.9.2-pt-BR.txt`.
+- Versão: `0.9.3 (903)`.
+- Escopo: prioridade obrigatória e exaustiva da Catena Áurea nas consultas evangélicas, paralelos, autoria rastreável, completude, cache e telemetria.
+- Publicar primeiro o backend `0.9.3` no Railway e validar `/health`, `/app-version`, os totais da base e os metadados da Catena; somente depois disponibilizar o AAB aos testadores, pois o mecanismo de resposta é executado no servidor.
+- Notas pt-BR prontas em `store-assets/android/release-notes-0.9.3-pt-BR.txt`.
 - O workflow `Android signed release` produz AAB assinado, checksum SHA-256 e mapa de ofuscação quando os quatro segredos da upload key estiverem configurados no ambiente protegido `google-play`.
 
 ## Monetização adiada durante o teste fechado
@@ -77,7 +77,7 @@ O AAB assinado será produzido em `android/app/build/outputs/bundle/release/`. N
 - Publicador: Aloysio Telles de Moraes Netto (conta pessoal).
 - E-mail público de suporte: `aplicativo.magisteria@gmail.com`.
 - URLs públicas validadas: `https://magisteria-production.up.railway.app/privacy`, `/terms`, `/support` e `/account-deletion`.
-- Build de testes preparado: `versionName=0.9.2`, `versionCode=902`; incrementar o `versionCode` em cada upload posterior.
+- Build de testes preparado: `versionName=0.9.3`, `versionCode=903`; incrementar o `versionCode` em cada upload posterior.
 - Criar upload key offline e ativar Play App Signing.
 - Configurar secrets somente no GitHub Environment protegido se build assinado for automatizado.
 

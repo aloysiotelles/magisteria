@@ -50,18 +50,28 @@ class SemanticCache:
         return connection
 
     @staticmethod
-    def _cache_key(plan: ResponsePlan, corpus_version: str) -> str:
+    def _cache_key(
+        plan: ResponsePlan,
+        corpus_version: str,
+        collection_version: str = "",
+    ) -> str:
         material = "|".join((
             plan.semantic_signature,
             corpus_version,
+            collection_version,
             plan.taxonomy_version,
             plan.strategy_version,
         ))
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
-    def get(self, plan: ResponsePlan, corpus_version: str) -> dict | None:
+    def get(
+        self,
+        plan: ResponsePlan,
+        corpus_version: str,
+        collection_version: str = "",
+    ) -> dict | None:
         now = _utcnow().isoformat()
-        key = self._cache_key(plan, corpus_version)
+        key = self._cache_key(plan, corpus_version, collection_version)
         with self._connect() as db:
             db.execute("DELETE FROM semantic_cache_entries WHERE expires_at <= ?", (now,))
             row = db.execute(
@@ -85,16 +95,27 @@ class SemanticCache:
             "references": json.loads(row["references_json"]),
         }
 
-    def put(self, plan: ResponsePlan, corpus_version: str, chunks: list[dict]) -> None:
+    def put(
+        self,
+        plan: ResponsePlan,
+        corpus_version: str,
+        chunks: list[dict],
+        collection_version: str = "",
+    ) -> None:
         now = _utcnow()
         expires = now + timedelta(seconds=self.ttl_seconds)
-        key = self._cache_key(plan, corpus_version)
+        key = self._cache_key(plan, corpus_version, collection_version)
         safe_chunks = [
             {
                 field: chunk.get(field)
                 for field in (
                     "id", "source", "location", "text", "score", "score_normalized",
                     "ordem", "categoria", "referencias", "component", "components",
+                    "collection", "work", "compiler", "gospel", "chapter",
+                    "verse_start", "verse_end", "pericope", "patristic_author",
+                    "patristic_authors", "source_work", "attributions", "language",
+                    "document_id", "previous_chunk_id", "next_chunk_id", "chunk_sequence",
+                    "gospel_role", "gospel_reference",
                 )
                 if chunk.get(field) is not None
             }

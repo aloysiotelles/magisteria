@@ -27,7 +27,7 @@ O keystore é reconstruído apenas na área temporária do executor, o AAB é as
 3. Entregar ao proprietário o local do backup e instruções de recuperação, sem mostrar as senhas em logs.
 4. Criar o ambiente `google-play` no GitHub e cadastrar os quatro secrets.
 5. Executar manualmente o workflow `Android signed release`.
-6. Verificar assinatura, package name `br.com.aloysiotelles.magisteria`, `versionCode 902`, `versionName 0.9.2` e `targetSdk 36`.
+6. Verificar assinatura, package name `br.com.aloysiotelles.magisteria`, `versionCode 903`, `versionName 0.9.3` e `targetSdk 36`.
 7. Enviar o AAB ao teste fechado e deixar o Google gerar/proteger a app signing key.
 
 Cada atualização futura deve usar a mesma upload key e um `versionCode` maior.
