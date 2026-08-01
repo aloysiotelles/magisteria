@@ -149,6 +149,33 @@ class RAGDiagnosticsRepository:
             "candidate_counts": numeric_metrics(diagnostics.get("candidate_counts")),
             "threshold_policy": numeric_metrics(diagnostics.get("threshold_policy")),
             "embedding": numeric_metrics(diagnostics.get("embedding")),
+            "gospel_policy": {
+                "query_classification": str(diagnostics.get("query_classification") or "ORDINARY_QUERY")[:40],
+                "identified_gospel_passages": [
+                    str(value)[:40] for value in diagnostics.get("identified_gospel_passages", [])[:24]
+                ],
+                "catena_search_executed": bool(diagnostics.get("catena_search_executed")),
+                "catena_policy_satisfied_by_cache": bool(diagnostics.get("catena_policy_satisfied_by_cache")),
+                "catena_chunks_retrieved": int(diagnostics.get("catena_chunks_retrieved", 0)),
+                "patristic_authors_retrieved": [
+                    str(value)[:100] for value in diagnostics.get("patristic_authors_retrieved", [])[:60]
+                ],
+                "parallel_passages_searched": [
+                    str(value)[:40] for value in diagnostics.get("parallel_passages_searched", [])[:24]
+                ],
+                "adjacent_chunks_loaded": int(diagnostics.get("adjacent_chunks_loaded", 0)),
+                "complementary_repository_search_executed": bool(
+                    diagnostics.get("complementary_repository_search_executed")
+                ),
+                "sources_used": [
+                    str(value)[:240] for value in diagnostics.get("sources_used", [])[:80]
+                ],
+                "coverage_score": float(diagnostics.get("coverage_score", 0) or 0),
+                "citation_validation_status": str(diagnostics.get("citation_validation_status") or "")[:60],
+                "completeness_validation_status": str(
+                    diagnostics.get("completeness_validation_status") or ""
+                )[:60],
+            },
         }
         validator_decision = str((validator or {}).get("decision", ""))[:80]
         with self._connect() as db:
@@ -168,7 +195,11 @@ class RAGDiagnosticsRepository:
                     datetime.now(timezone.utc).isoformat(),
                     "",
                     "",
-                    str(query_data.get("query_type", "")),
+                    str(
+                        diagnostics.get("query_classification")
+                        or query_data.get("query_classification")
+                        or query_data.get("query_type", "")
+                    ),
                     max(int(duration_ms), 0),
                     status,
                     int(diagnostics.get("candidates_fused", 0)),

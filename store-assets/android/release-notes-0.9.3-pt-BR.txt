@@ -1,0 +1,1 @@
+As consultas sobre os Evangelhos agora começam pela Catena Áurea de Santo Tomás de Aquino, com comentários patrísticos, passagens paralelas e autores rastreáveis. A pesquisa é complementada pelo Catecismo, Magistério e demais fontes do acervo. Inclui melhorias de completude, citações, cache e estabilidade.

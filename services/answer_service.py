@@ -15,7 +15,11 @@ from services.localization import (
 )
 from services.query_analysis import QueryType, analyze_query
 from services.response_planning import ResponsePlan, build_response_plan
-from services.response_quality import CoverageValidator, DoctrinalConsistencyValidator
+from services.response_quality import (
+    CoverageValidator,
+    DoctrinalConsistencyValidator,
+    PatristicAttributionValidator,
+)
 
 
 ABSOLUTE_RULE = (
@@ -39,6 +43,7 @@ class AnswerService:
         self.review_model = review_model or model
         self.client = AsyncOpenAI(api_key=api_key) if api_key else None
         self.coverage_validator = CoverageValidator()
+        self.attribution_validator = PatristicAttributionValidator()
 
     async def answer(
         self,
@@ -87,7 +92,7 @@ class AnswerService:
         selected_language = normalize_language(language)
         plan = plan or build_response_plan(question, selected_language)
         if not chunks:
-            if self.api_key:
+            if self.api_key and not plan.is_gospel:
                 return await self._answer_from_general_catholic_teaching(
                     question, history or [], selected_language, plan
                 )
@@ -196,6 +201,22 @@ class AnswerService:
                 previous_failures = coverage.failure_count
                 if stalled >= 2:
                     break
+        invalid_attributions = self.attribution_validator.validate(final_answer, chunks) if plan.is_gospel else ()
+        if invalid_attributions:
+            final_answer = await self._grounded_rewrite(
+                question,
+                final_answer,
+                chunks,
+                "Remova ou torne impessoais as atribuições patrísticas não confirmadas pelos trechos: "
+                + ", ".join(invalid_attributions),
+                history or [],
+                selected_language,
+                plan,
+            )
+            regenerated = True
+            action = "rewrite"
+            coverage = self.coverage_validator.validate_answer(plan, final_answer, len(chunks))
+            invalid_attributions = self.attribution_validator.validate(final_answer, chunks)
         used_indexes = self.coverage_validator.used_source_indexes(final_answer, len(chunks))
         return {
             "resposta": final_answer,
@@ -209,6 +230,10 @@ class AnswerService:
             "input_tokens_estimated": self._estimate_input_tokens(question, chunks, history or [], plan),
             "output_tokens_estimated": max(len(final_answer) // 4, 1),
             "regenerated": regenerated,
+            "attribution_validation": {
+                "passed": not invalid_attributions,
+                "invalid_attributions": list(invalid_attributions),
+            },
         }
 
     async def _answer_from_general_catholic_teaching(
@@ -365,6 +390,27 @@ class AnswerService:
             f"[ORDEM {chunk.get('ordem', 1)} — {chunk.get('categoria', 'Documento')} — TRECHO {number} — {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
             for number, chunk in enumerate(chunks, start=1)
         )
+        source_metadata = json.dumps(
+            [
+                {
+                    "marker": f"F{number}",
+                    "collection": chunk.get("collection"),
+                    "work": chunk.get("work"),
+                    "compiler": chunk.get("compiler"),
+                    "gospel": chunk.get("gospel"),
+                    "chapter": chunk.get("chapter"),
+                    "verse_start": chunk.get("verse_start"),
+                    "verse_end": chunk.get("verse_end"),
+                    "pericope": chunk.get("pericope"),
+                    "patristic_authors": chunk.get("patristic_authors") or [],
+                    "source_work": chunk.get("source_work"),
+                    "location": chunk.get("location"),
+                    "gospel_role": chunk.get("gospel_role"),
+                }
+                for number, chunk in enumerate(chunks, start=1)
+            ],
+            ensure_ascii=False,
+        )
         conversation = "\n\n".join(
             f"USUÁRIO: {turn.get('pergunta', '')}\nMAGISTERIA: {turn.get('resposta', '')}"
             for turn in (history or [])[-3:]
@@ -373,6 +419,13 @@ class AnswerService:
             f"[AMOSTRA DE ESTILO {number} - {chunk['source']}, {chunk['location']}]\n{chunk['text']}"
             for number, chunk in enumerate(style_chunks or [], start=1)
         ) or "Sem amostras especificas de homilias para esta pergunta."
+        gospel_review = (
+            "Em consulta evangélica, confira especialmente: passagem principal e paralelos; prioridade real da "
+            "Catena na leitura patrística; distinção entre Escritura, Catena, Magistério e síntese; atribuição de "
+            "cada Padre somente quando confirmada nos metadados; e ausência de falsa declaração de consulta à "
+            "Catena quando não houver trecho dessa coleção. Qualquer atribuição não rastreável exige rewrite."
+            if plan.is_gospel else ""
+        )
 
         review_prompt = (
             "Você é um verificador de respostas documentais. "
@@ -393,6 +446,7 @@ class AnswerService:
             f" {localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, selected_language)}"
             f" {self._format_instruction(question)}"
             f" {self._catechesis_instruction(question)}"
+            f" {gospel_review}"
         )
         response = await self.client.responses.create(
             model=self.review_model,
@@ -401,6 +455,7 @@ class AnswerService:
                 f"PERGUNTA:\n{question}\n\n"
                 f"HISTÓRICO:\n{conversation}\n\n"
                 f"TRECHOS:\n{context}\n\n"
+                f"METADADOS RASTREÁVEIS:\n{source_metadata}\n\n"
                 f"AMOSTRAS DE ESTILO:\n{style_context}\n\n"
                 f"PLANO DE COBERTURA:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}\n\n"
                 f"RESPOSTA A VALIDAR:\n{answer}"
@@ -592,6 +647,30 @@ class AnswerService:
             }
         return review
 
+    @staticmethod
+    def _source_metadata(chunks: list[dict]) -> str:
+        return json.dumps(
+            [
+                {
+                    "marker": f"F{number}",
+                    "collection": chunk.get("collection"),
+                    "work": chunk.get("work"),
+                    "compiler": chunk.get("compiler"),
+                    "gospel": chunk.get("gospel"),
+                    "chapter": chunk.get("chapter"),
+                    "verse_start": chunk.get("verse_start"),
+                    "verse_end": chunk.get("verse_end"),
+                    "pericope": chunk.get("pericope"),
+                    "patristic_authors": chunk.get("patristic_authors") or [],
+                    "source_work": chunk.get("source_work"),
+                    "location": chunk.get("location"),
+                    "gospel_role": chunk.get("gospel_role"),
+                }
+                for number, chunk in enumerate(chunks, start=1)
+            ],
+            ensure_ascii=False,
+        )
+
     def _request_arguments(
         self,
         question: str,
@@ -608,6 +687,7 @@ class AnswerService:
             f"{chunk['source']}, {chunk['location']} — componente: {chunk.get('component', 'visão geral')}]\n{chunk['text']}"
             for number, chunk in enumerate(chunks, start=1)
         )
+        source_metadata = self._source_metadata(chunks)
         conversation = "\n\n".join(
             f"USUÁRIO: {turn.get('pergunta', '')}\nMAGISTERIA: {turn.get('resposta', '')}"
             for turn in history[-3:]
@@ -627,6 +707,7 @@ class AnswerService:
                 "Não trate a amplitude ou a brevidade da consulta como ausência de conteúdo. "
             )
         structure_instruction = self._structure_instruction(plan)
+        gospel_instruction = self._gospel_instruction(plan, chunks)
         return {
             "model": self.model,
             "instructions": (
@@ -634,6 +715,7 @@ class AnswerService:
                 f"REGRA ABSOLUTA: {ABSOLUTE_RULE} "
                 f"{thematic_instruction} "
                 f"{structure_instruction} "
+                f"{gospel_instruction} "
                 f"Adapte a linguagem ao perfil informado: {plan.profile_instruction}. "
                 "Não use memória, conhecimento geral, inferências externas ou pesquisa na internet. "
                 "Não mencione fontes que não estejam nos trechos. "
@@ -673,11 +755,43 @@ class AnswerService:
             "input": (
                 f"HISTÓRICO DA CONVERSA:\n{conversation}\n\n"
                 f"PERGUNTA ATUAL:\n{question}\n\nTRECHOS CADASTRADOS EM ORDEM EDITORIAL:\n{context}"
+                f"\n\nMETADADOS DOCUMENTAIS RASTREÁVEIS DOS TRECHOS:\n{source_metadata}"
                 f"\n\nPLANO INTERNO DE COBERTURA:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}"
                 f"\n\nAMOSTRAS DE ESTILO DAS HOMILIAS:\n{style_context}"
             ),
             "max_output_tokens": plan.max_output_tokens,
         }
+
+    @staticmethod
+    def _gospel_instruction(plan: ResponsePlan, chunks: list[dict]) -> str:
+        if not plan.is_gospel:
+            return ""
+        catena_chunks = [chunk for chunk in chunks if chunk.get("collection") == "CATENA_AUREA"]
+        references = ", ".join(plan.gospel.passage_references) or "passagem identificada nos trechos"
+        if catena_chunks:
+            catena_status = (
+                "A Catena Áurea foi efetivamente recuperada. Faça dela o núcleo da leitura patrística, "
+                "sem colocá-la acima da própria Escritura ou do Magistério."
+            )
+        else:
+            catena_status = (
+                "A recuperação da Catena Áurea não forneceu trecho utilizável. Não diga que ela foi consultada, "
+                "não invente comentários e fundamente a resposta somente nas demais fontes recuperadas."
+            )
+        return (
+            f"Esta é uma consulta evangélica sobre {plan.gospel.episode}; passagens identificadas: {references}. "
+            f"{catena_status} Distinga explicitamente: texto e contexto evangélico; leitura patrística reunida na "
+            "Catena Áurea; ensinamento do Catecismo ou do Magistério; e síntese teológica do MAGISTERIA. "
+            "Quando houver narrativas paralelas, explique como se iluminam mutuamente sem forçar harmonização nem "
+            "tratar diferenças legítimas como contradições. Atribua uma interpretação a um Padre somente se o nome "
+            "constar nos metadados rastreáveis ou no rótulo explícito do trecho correspondente. Se a autoria não "
+            "estiver confirmada, escreva 'o comentário reunido na Catena Áurea observa que'. Nunca deduza um autor. "
+            "Em explicações amplas, organize com estas seções em texto simples, omitindo apenas as manifestamente "
+            "inaplicáveis: 1. Passagem evangélica; 2. Contexto; 3. Leitura da Catena Áurea; 4. Síntese patrística; "
+            "5. Complementação pelas demais fontes; 6. Sentido teológico; 7. Aplicação à vida cristã; "
+            "8. Fontes consultadas. Na última seção, mencione somente fontes e autores realmente usados e mantenha "
+            "as marcações [F1], [F2] que dão rastreabilidade."
+        )
 
     @staticmethod
     def _structure_instruction(plan: ResponsePlan) -> str:
@@ -766,12 +880,24 @@ def format_sources(chunks: list[dict]) -> list[dict]:
                 "locais": [],
                 "indices_citacao": [],
                 "relevancia": chunk.get("score", 0),
+                "colecao": chunk.get("collection", ""),
+                "obra": chunk.get("work", ""),
+                "compilador": chunk.get("compiler", ""),
+                "autores_patristicos": [],
+                "passagens_evangelicas": [],
             },
         )
         item["referencias"].extend(chunk.get("referencias", []))
         item["locais"].append(chunk["location"])
         if chunk.get("citation_index"):
             item["indices_citacao"].append(int(chunk["citation_index"]))
+        authors = chunk.get("patristic_authors") or ()
+        if isinstance(authors, str):
+            authors = (authors,)
+        item["autores_patristicos"].extend(str(author) for author in authors if author)
+        if chunk.get("gospel") and chunk.get("chapter"):
+            reference = next(iter(chunk.get("referencias") or ()), f"{chunk['gospel']} {chunk['chapter']}")
+            item["passagens_evangelicas"].append(reference)
         item["relevancia"] = max(item["relevancia"], chunk.get("score", 0))
 
     sources = []
@@ -779,6 +905,8 @@ def format_sources(chunks: list[dict]) -> list[dict]:
         references = list(dict.fromkeys(item.pop("referencias")))
         locations = list(dict.fromkeys(item.pop("locais")))
         citation_indexes = sorted(set(item.pop("indices_citacao")))
+        item["autores_patristicos"] = list(dict.fromkeys(item["autores_patristicos"]))
+        item["passagens_evangelicas"] = list(dict.fromkeys(item["passagens_evangelicas"]))
         normalized = item["arquivo"].lower()
         if references and "bíblia" in normalized:
             local = "; ".join(references[:8])
@@ -790,6 +918,9 @@ def format_sources(chunks: list[dict]) -> list[dict]:
             local = "Referência de capítulo e versículo não identificada no trecho"
         else:
             local = "; ".join(locations)
+        if item.get("colecao") == "CATENA_AUREA":
+            locator_parts = [*item["passagens_evangelicas"][:12], *locations[:12]]
+            local = "; ".join(dict.fromkeys(locator_parts))
         sources.append({
             **item,
             "local": local,
@@ -825,7 +956,12 @@ def format_abnt_references(chunks: list[dict]) -> str:
         filename = source["arquivo"]
         normalized = filename.lower()
         locator = source["local"].replace("página ", "p. ")
-        if "catecismo" in normalized:
+        if source.get("colecao") == "CATENA_AUREA" or "catena" in normalized:
+            entry = (
+                "TOMÁS DE AQUINO (comp.). Catena Áurea: exposição contínua dos quatro Evangelhos. "
+                f"[S. l.: s. n.], [s. d.]. {locator}."
+            )
+        elif "catecismo" in normalized:
             entry = f"IGREJA CATÓLICA. Catecismo da Igreja Católica. [S. l.: s. n.], [s. d.]. {locator}."
         elif "simbolos" in normalized:
             entry = (

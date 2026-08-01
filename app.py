@@ -49,7 +49,7 @@ from services.retrieval_orchestrator import RetrievalOrchestrator
 from services.search_history import UserSearchHistory
 from services.semantic_cache import SemanticCache
 
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.9.3"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(
@@ -1577,7 +1577,35 @@ def response_metadata(plan: ResponsePlan, diagnostics: dict, result: dict) -> di
         "continuation_query": continuation_query,
         "cache_hit": bool(diagnostics.get("cache_hit")),
         "coverage": result.get("coverage", {}),
+        "retrieval_policy": {
+            "query_classification": diagnostics.get("query_classification", plan.gospel.classification),
+            "gospel_passages": diagnostics.get("identified_gospel_passages", []),
+            "catena_aurea_prioritized": bool(
+                diagnostics.get("catena_search_executed")
+                or diagnostics.get("catena_policy_satisfied_by_cache")
+            ),
+            "catena_chunks": int(diagnostics.get("catena_chunks_retrieved", 0)),
+            "coverage_score": diagnostics.get("coverage_score"),
+            "completeness_status": diagnostics.get("completeness_validation_status"),
+        },
     }
+
+
+def finalize_gospel_diagnostics(diagnostics: dict, result: dict) -> None:
+    if diagnostics.get("query_classification") != "GOSPEL_QUERY":
+        return
+    invalid_citations = result.get("coverage", {}).get("invalid_citations", [])
+    attribution = result.get("attribution_validation", {"passed": True})
+    diagnostics["citation_validation_status"] = (
+        "passed" if not invalid_citations and attribution.get("passed", True) else "failed"
+    )
+    retrieval_complete = diagnostics.get("completeness_validation_status") in {
+        "passed", "satisfied_by_versioned_cache"
+    }
+    answer_complete = bool(result.get("coverage", {}).get("passed"))
+    diagnostics["completeness_validation_status"] = (
+        "passed" if retrieval_complete and answer_complete else "incomplete"
+    )
 
 
 def homily_style_chunks(payload: QuestionRequest, query_override: str | None = None) -> list[dict]:
@@ -1648,6 +1676,8 @@ async def ask(payload: QuestionRequest, request: Request):
     except Exception as exc:
         logger.exception("Falha ao traduzir a consulta para recuperação em português.")
         raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
+    if language != "pt-BR":
+        plan = build_response_plan(search_query_pt, language, payload.perfil)
     chunks, diagnostics = await asyncio.to_thread(
         ordered_chunks_with_diagnostics, payload, search_query_pt, plan
     )
@@ -1690,6 +1720,7 @@ async def ask(payload: QuestionRequest, request: Request):
         )
         raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
     used_chunks = actually_used_chunks(chunks, result)
+    finalize_gospel_diagnostics(diagnostics, result)
     await asyncio.to_thread(active_search_history().record, user["id"], question, plan)
     await asyncio.to_thread(
         rag_diagnostics.record, request_id, question, diagnostics,
@@ -1749,6 +1780,8 @@ async def ask_stream(payload: QuestionRequest, request: Request):
     except Exception as exc:
         logger.exception("Falha ao traduzir a consulta para recuperação em português.")
         raise HTTPException(status_code=502, detail=answer_message("technical_failure", language)) from exc
+    if language != "pt-BR":
+        plan = build_response_plan(search_query_pt, language, payload.perfil)
     chunks, diagnostics = await asyncio.to_thread(
         ordered_chunks_with_diagnostics, payload, search_query_pt, plan
     )
@@ -1782,6 +1815,7 @@ async def ask_stream(payload: QuestionRequest, request: Request):
                 question, chunks, history, style_chunks, language, plan
             )
             used_chunks = actually_used_chunks(chunks, result)
+            finalize_gospel_diagnostics(diagnostics, result)
             await asyncio.to_thread(active_search_history().record, user["id"], question, plan)
             await asyncio.to_thread(
                 rag_diagnostics.record, request_id, question, diagnostics,

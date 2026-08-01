@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 
 from services.catholic_taxonomy import fold_text
+from services.gospel_policy import extract_patristic_attributions, patristic_authors
 from services.response_planning import ResponsePlan
 
 
@@ -101,7 +102,7 @@ class CoverageValidator:
                 shallow.append(component)
         citations = [int(value) for value in self.CITATION_PATTERN.findall(answer)]
         invalid = tuple(f"F{value}" for value in citations if value < 1 or value > source_count)
-        if plan.composite and source_count and not citations:
+        if (plan.composite or plan.is_gospel) and source_count and not citations:
             invalid = (*invalid, "ausentes")
         passed = not missing and not shallow and not invalid
         return CoverageResult(passed, tuple(missing), tuple(shallow), invalid, len(citations))
@@ -120,6 +121,52 @@ class CitationValidator:
     def validate(self, answer: str, source_count: int) -> tuple[str, ...]:
         citations = [int(value) for value in CoverageValidator.CITATION_PATTERN.findall(answer)]
         return tuple(f"F{value}" for value in citations if value < 1 or value > source_count)
+
+
+class PatristicAttributionValidator:
+    """Detect named patristic claims that are absent from recovered Catena labels."""
+
+    KNOWN_AUTHORS = (
+        "agostinho", "joao crisostomo", "crisostomo", "jeronimo", "ambrosio",
+        "gregorio magno", "gregorio de nissa", "gregorio nazianzeno", "hilario",
+        "beda", "origenes", "cirilo de alexandria", "joao damasceno", "remigio",
+        "teofilacto", "pseudo-crisostomo", "rabano", "leao", "eusebio",
+    )
+    CLAIM_PATTERN = re.compile(
+        r"\b(?:segundo|conforme|para|como ensina|como afirma|na leitura de)\s+"
+        r"(?:sao|santo|santa)?\s*(?P<author>[a-z -]{3,45})",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _equivalent(claimed: str, available: str) -> bool:
+        claimed = fold_text(claimed).strip(" ,.;:")
+        available = fold_text(available).strip(" ,.;:")
+        claimed = re.sub(r"^(?:sao|santo|santa)\s+", "", claimed)
+        available = re.sub(r"^(?:sao|santo|santa)\s+", "", available)
+        return bool(claimed and available and (claimed in available or available in claimed))
+
+    def validate(self, answer: str, chunks: list[dict]) -> tuple[str, ...]:
+        available = list(patristic_authors(chunks))
+        if not available:
+            available = [
+                item["author"]
+                for chunk in chunks
+                for item in extract_patristic_attributions(str(chunk.get("text") or ""))
+            ]
+        folded_answer = fold_text(answer)
+        invalid: list[str] = []
+        for known in self.KNOWN_AUTHORS:
+            if known not in folded_answer:
+                continue
+            claim_context = bool(re.search(
+                rf"\b(?:segundo|conforme|para|afirma|ensina|interpreta)\b[^.!?]{{0,55}}\b{re.escape(known)}\b|"
+                rf"\b{re.escape(known)}\b[^.!?]{{0,35}}\b(?:afirma|ensina|interpreta|observa)\b",
+                folded_answer,
+            ))
+            if claim_context and not any(self._equivalent(known, author) for author in available):
+                invalid.append(known)
+        return tuple(dict.fromkeys(invalid))
 
 
 class DoctrinalConsistencyValidator:

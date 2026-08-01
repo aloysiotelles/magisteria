@@ -6,10 +6,11 @@ import hashlib
 import re
 
 from services.catholic_taxonomy import TAXONOMY_VERSION, TopicSpec, classify_category, fold_text, match_topic
+from services.gospel_policy import GospelQueryContext, classify_gospel_query
 from services.query_analysis import QueryType, analyze_query
 
 
-RESPONSE_STRATEGY_VERSION = "pastoral-language-3"
+RESPONSE_STRATEGY_VERSION = "catena-gospel-priority-1"
 
 
 class DepthLevel(StrEnum):
@@ -72,12 +73,17 @@ class ResponsePlan:
     max_output_tokens: int
     minimum_component_characters: int
     suggestions: tuple[str, ...]
+    gospel: GospelQueryContext
     taxonomy_version: str = TAXONOMY_VERSION
     strategy_version: str = RESPONSE_STRATEGY_VERSION
 
     @property
     def composite(self) -> bool:
         return IntentKind.COMPOSITE.value in self.intents
+
+    @property
+    def is_gospel(self) -> bool:
+        return self.gospel.is_gospel
 
     @property
     def profile_instruction(self) -> str:
@@ -88,9 +94,12 @@ class ResponsePlan:
         base = "|".join((
             self.topic_key,
             self.category,
+            self.depth,
+            self.language,
             "fechado" if self.closed_set else "catalogo",
             fold_text(self.catalog_scope),
             *map(fold_text, self.components),
+            self.gospel.cache_signature,
         ))
         return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
@@ -99,6 +108,7 @@ class ResponsePlan:
         data["composite"] = self.composite
         data["profile_instruction"] = self.profile_instruction
         data["semantic_signature"] = self.semantic_signature
+        data["query_classification"] = self.gospel.classification
         return data
 
 
@@ -121,7 +131,12 @@ def _fallback_theme(question: str) -> str:
     return theme.strip(" .?!,;:") or "Consulta católica"
 
 
-def _intent_set(question: str, spec: TopicSpec | None, composite: bool) -> tuple[str, ...]:
+def _intent_set(
+    question: str,
+    spec: TopicSpec | None,
+    composite: bool,
+    gospel: GospelQueryContext,
+) -> tuple[str, ...]:
     intents: list[str] = []
     analysis = analyze_query(question)
     if analysis.query_type in {QueryType.TERM, QueryType.PHRASE, QueryType.QUESTION}:
@@ -134,6 +149,8 @@ def _intent_set(question: str, spec: TopicSpec | None, composite: bool) -> tuple
     ):
         if pattern.search(question):
             intents.append(intent.value)
+    if gospel.is_gospel:
+        intents.append(IntentKind.BIBLICAL.value)
     if ENUMERATIVE_PATTERN.search(question) or (spec and spec.components):
         intents.append(IntentKind.ENUMERATIVE.value)
     if DEEP_PATTERN.search(question):
@@ -160,9 +177,10 @@ def build_response_plan(
     language: str = "pt-BR",
     user_profile: str = "adulto_leigo",
 ) -> ResponsePlan:
+    gospel = classify_gospel_query(question)
     spec = match_topic(question)
     asks_summary = bool(SUMMARY_PATTERN.search(question))
-    composite = bool((spec and (spec.components or not spec.closed_set)) or (
+    composite = bool(gospel.broad or (spec and (spec.components or not spec.closed_set)) or (
         ENUMERATIVE_PATTERN.search(question) and len(question.split()) > 2
     ))
     asks_deep = bool(DEEP_PATTERN.search(question))
@@ -173,9 +191,9 @@ def build_response_plan(
     else:
         depth = DepthLevel.EXPLANATORY
 
-    theme = spec.title if spec else _fallback_theme(question)
-    category = classify_category(question, spec)
-    components = spec.components if spec and composite else ()
+    theme = gospel.episode if gospel.is_gospel else spec.title if spec else _fallback_theme(question)
+    category = "evangelhos" if gospel.is_gospel else classify_category(question, spec)
+    components = gospel.components if gospel.broad else spec.components if spec and composite else ()
     if depth == DepthLevel.SUMMARY:
         max_context_tokens, max_output_tokens, minimum_chars = 4200, 1200, 70
     elif depth == DepthLevel.DEEP:
@@ -186,23 +204,44 @@ def build_response_plan(
     else:
         max_context_tokens, max_output_tokens, minimum_chars = 6200, 2000, 120
 
+    if gospel.is_gospel:
+        if depth == DepthLevel.SUMMARY:
+            max_context_tokens, max_output_tokens = 6500, 1600
+        elif depth == DepthLevel.DEEP:
+            max_context_tokens = min(30000, max(16000, max_context_tokens))
+            max_output_tokens = min(32000, max(7000, max_output_tokens))
+        else:
+            max_context_tokens, max_output_tokens = 12000, 3500
+
     # A lista canônica inteira permanece ativa. Se o provedor atingir um limite
     # técnico, o serviço continua internamente antes de entregar a resposta.
     active_components = components
-    topic_key = spec.key if spec else re.sub(r"[^a-z0-9]+", "_", fold_text(theme)).strip("_")[:100]
-    title = spec.title if spec else theme[:120]
+    topic_key = (
+        f"gospel_{gospel.episode_key}"
+        if gospel.is_gospel
+        else spec.key if spec else re.sub(r"[^a-z0-9]+", "_", fold_text(theme)).strip("_")[:100]
+    )
+    title = gospel.episode if gospel.is_gospel else spec.title if spec else theme[:120]
     profile = user_profile if user_profile in PROFILE_INSTRUCTIONS else "adulto_leigo"
     return ResponsePlan(
         theme=theme,
         topic_key=topic_key or "consulta_catolica",
         display_title=title,
         category=category,
-        intents=_intent_set(question, spec, composite),
+        intents=_intent_set(question, spec, composite, gospel),
         depth=depth.value,
         components=components,
         active_components=active_components,
-        dimensions=spec.dimensions if spec else _generic_dimensions(category),
-        source_types=spec.source_types if spec else ("Sagrada Escritura", "Catecismo", "Magistério", "fontes do acervo"),
+        dimensions=(
+            ("sentido literal", "contexto narrativo", "cristologia", "sentido moral", "sentido espiritual", "Igreja", "sacramentos", "escatologia")
+            if gospel.is_gospel
+            else spec.dimensions if spec else _generic_dimensions(category)
+        ),
+        source_types=(
+            ("Sagrada Escritura", "Catena Áurea", "Catecismo", "Magistério", "Padres e Doutores", "Liturgia")
+            if gospel.is_gospel
+            else spec.source_types if spec else ("Sagrada Escritura", "Catecismo", "Magistério", "fontes do acervo")
+        ),
         closed_set=spec.closed_set if spec else False,
         catalog_scope=spec.catalog_scope if spec else "",
         introduction_required=True,
@@ -214,7 +253,8 @@ def build_response_plan(
         max_context_tokens=max_context_tokens,
         max_output_tokens=max_output_tokens,
         minimum_component_characters=minimum_chars,
-        suggestions=spec.related[:5] if spec else (),
+        suggestions=spec.related[:5] if spec and not gospel.is_gospel else (),
+        gospel=gospel,
     )
 
 

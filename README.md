@@ -4,9 +4,11 @@ Aplicativo web de pesquisa pastoral católica. O sistema lê arquivos locais, re
 
 ## O que esta versão faz
 
-A versão 0.9.2 torna a linguagem mais humana, fluida, acolhedora e pastoral sem reduzir a profundidade doutrinária. Catequeses, formações e homilias recebem tratamento próprio; estruturas e fontes são usadas com moderação; e respostas sem passagem direta permanecem prudentes, sem expor detalhes técnicos nem inventar referências. A profundidade das respostas compostas, a recuperação segura de senha, o histórico privado no Android e a interface poliglota permanecem preservados.
+A versão 0.9.3 aplica uma política própria às consultas sobre os Evangelhos: identifica a passagem e os paralelos, pesquisa primeiro e exclusivamente a Catena Áurea, amplia iterativamente os comentários pertinentes e somente depois complementa a resposta com Escritura, Catecismo, Magistério, Liturgia e demais fontes. A autoria patrística permanece rastreável, atribuições não confirmadas são bloqueadas e o cache é versionado pela política e pela coleção Catena. Autenticação, assinaturas, histórico, interface poliglota e o fluxo ordinário das consultas não evangélicas permanecem preservados.
 
 - aceita arquivos PDF, DOCX, TXT e Markdown;
+- classifica semanticamente consultas evangélicas e aplica recuperação obrigatória `CATENA_AUREA` antes das demais coleções;
+- indexa a Catena por Evangelho, capítulo, lição, perícope, autoria explícita e chunks adjacentes;
 - permite escolher português, inglês ou espanhol na barra superior e preserva a escolha no navegador;
 - mantém toda a indexação, análise e busca em português, traduzindo apenas a consulta de entrada para recuperação e a resposta de saída para apresentação;
 - mantém um índice local SQLite FTS5 persistente; a versão atual não gera embeddings;

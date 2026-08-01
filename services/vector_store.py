@@ -14,6 +14,9 @@ from pathlib import Path
 import unicodedata
 
 from services.document_loader import discover_documents, load_document
+from services.catena_metadata import is_catena_source, split_catena_document
+from services.gospel_policy import CATENA_COLLECTION, CATENA_INDEXING_VERSION
+from services.migrations import apply_migrations
 from services.query_analysis import QueryAnalysis, QueryType, analyze_query
 
 
@@ -196,6 +199,10 @@ class LocalVectorStore:
                 );
                 CREATE TABLE IF NOT EXISTS errors (source TEXT, error TEXT);
             """)
+            apply_migrations(
+                db,
+                Path(__file__).resolve().parents[1] / "vector_migrations",
+            )
 
     def index_documents(self, progress_callback: Callable[[int, int, str], None] | None = None) -> dict:
         documents = discover_documents(self.documents_dir)
@@ -204,34 +211,48 @@ class LocalVectorStore:
             progress_callback(0, len(documents), "Preparando documentos")
         with self._connect() as db:
             known = {row["source"]: (row["size"], row["mtime_ns"]) for row in db.execute("SELECT * FROM files")}
+            catena_version_row = db.execute(
+                "SELECT value FROM metadata WHERE key='catena_indexing_version'"
+            ).fetchone()
+            catena_reindex_required = (
+                catena_version_row is None or catena_version_row[0] != CATENA_INDEXING_VERSION
+            )
             changed = bool(set(known) - set(names))
             for removed in set(known) - set(names):
+                document_id = hashlib.sha256(removed.encode("utf-8")).hexdigest()[:20]
+                db.execute("DELETE FROM chunk_metadata WHERE document_id = ?", (document_id,))
                 db.execute("DELETE FROM chunks WHERE source = ?", (removed,))
                 db.execute("DELETE FROM files WHERE source = ?", (removed,))
             for position, path in enumerate(documents, 1):
                 source = path.relative_to(self.documents_dir).as_posix()
                 stat = path.stat()
                 fingerprint = (stat.st_size, stat.st_mtime_ns)
-                if known.get(source) == fingerprint:
+                catena_source = is_catena_source(source)
+                if known.get(source) == fingerprint and not (catena_source and catena_reindex_required):
                     if progress_callback:
                         progress_callback(position, len(documents), f"Reutilizado: {path.name}")
                     continue
                 changed = True
                 if progress_callback:
                     progress_callback(position - 1, len(documents), f"Lendo {position} de {len(documents)}: {path.name}")
+                document_id = hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
+                db.execute("DELETE FROM chunk_metadata WHERE document_id = ?", (document_id,))
                 db.execute("DELETE FROM chunks WHERE source = ?", (source,))
                 db.execute("DELETE FROM errors WHERE source = ?", (source,))
                 try:
-                    rows = []
-                    for section in load_document(path, self.documents_dir):
-                        for number, text in enumerate(self._split_text(section.text), 1):
-                            chunk_id = hashlib.sha256(f"{source}|{section.location}|{number}|{text}".encode()).hexdigest()[:20]
-                            rows.append((chunk_id, source, section.location, text))
-                            if len(rows) >= 100:
-                                db.executemany("INSERT INTO chunks(id,source,location,text) VALUES(?,?,?,?)", rows)
-                                rows.clear()
-                    if rows:
-                        db.executemany("INSERT INTO chunks(id,source,location,text) VALUES(?,?,?,?)", rows)
+                    if catena_source:
+                        self._index_catena_document(db, path, source)
+                    else:
+                        rows = []
+                        for section in load_document(path, self.documents_dir):
+                            for number, text in enumerate(self._split_text(section.text), 1):
+                                chunk_id = hashlib.sha256(f"{source}|{section.location}|{number}|{text}".encode()).hexdigest()[:20]
+                                rows.append((chunk_id, source, section.location, text))
+                                if len(rows) >= 100:
+                                    db.executemany("INSERT INTO chunks(id,source,location,text) VALUES(?,?,?,?)", rows)
+                                    rows.clear()
+                        if rows:
+                            db.executemany("INSERT INTO chunks(id,source,location,text) VALUES(?,?,?,?)", rows)
                     db.execute(
                         "INSERT OR REPLACE INTO files(source,size,mtime_ns) VALUES(?,?,?)",
                         (source, *fingerprint),
@@ -242,12 +263,72 @@ class LocalVectorStore:
                 if progress_callback:
                     progress_callback(position, len(documents), path.name)
             current_version = db.execute("SELECT value FROM metadata WHERE key='updated_at'").fetchone()
+            db.execute(
+                "INSERT OR REPLACE INTO metadata(key,value) VALUES('catena_indexing_version',?)",
+                (CATENA_INDEXING_VERSION,),
+            )
             if changed or current_version is None:
                 updated = datetime.now(timezone.utc).isoformat()
                 db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('updated_at',?)", (updated,))
         with self._search_cache_lock:
             self._search_cache.clear()
         return {**self.status(), "acervo_alterado": changed}
+
+    def _index_catena_document(self, db: sqlite3.Connection, path: Path, source: str) -> None:
+        structured = []
+        for section in load_document(path, self.documents_dir):
+            structured.extend(split_catena_document(section.text, source, self._split_text))
+        rows: list[tuple[str, str, str, str]] = []
+        identifiers: list[str] = []
+        for sequence, item in enumerate(structured, 1):
+            chunk_id = hashlib.sha256(
+                f"{source}|{item.location}|{sequence}|{item.text}".encode("utf-8")
+            ).hexdigest()[:20]
+            identifiers.append(chunk_id)
+            rows.append((chunk_id, source, item.location, item.text))
+        for start in range(0, len(rows), 100):
+            db.executemany(
+                "INSERT INTO chunks(id,source,location,text) VALUES(?,?,?,?)",
+                rows[start:start + 100],
+            )
+        metadata_rows = []
+        for index, (chunk_id, item) in enumerate(zip(identifiers, structured), 1):
+            metadata = dict(item.metadata)
+            previous_chunk_id = identifiers[index - 2] if index > 1 else None
+            next_chunk_id = identifiers[index] if index < len(identifiers) else None
+            metadata_rows.append((
+                chunk_id,
+                str(metadata.get("collection") or ""),
+                str(metadata.get("work") or ""),
+                str(metadata.get("compiler") or ""),
+                str(metadata.get("gospel") or ""),
+                metadata.get("chapter"),
+                metadata.get("verse_start"),
+                metadata.get("verse_end"),
+                str(metadata.get("pericope") or ""),
+                str(metadata.get("patristic_author") or ""),
+                json.dumps(metadata.get("patristic_authors") or [], ensure_ascii=False),
+                str(metadata.get("source_work") or ""),
+                json.dumps(metadata.get("attributions") or [], ensure_ascii=False),
+                str(metadata.get("language") or ""),
+                str(metadata.get("document_id") or ""),
+                previous_chunk_id,
+                next_chunk_id,
+                index,
+                json.dumps(metadata, ensure_ascii=False),
+            ))
+        for start in range(0, len(metadata_rows), 100):
+            db.executemany(
+                """
+                INSERT OR REPLACE INTO chunk_metadata(
+                    chunk_id,collection,work,compiler,gospel,chapter,verse_start,verse_end,
+                    pericope,patristic_author,patristic_authors_json,source_work,
+                    attributions_json,language,document_id,previous_chunk_id,next_chunk_id,
+                    chunk_sequence,metadata_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                metadata_rows[start:start + 100],
+            )
 
     def _cached_search(self, key: tuple):
         now = time.monotonic()
@@ -422,6 +503,59 @@ class LocalVectorStore:
                 matches.extend(dict(row) for row in rows)
         return matches
 
+    def _structured_metadata_rows(
+        self,
+        filters: dict | None,
+        limit: int = 1600,
+    ) -> tuple[list[dict], bool]:
+        if not filters:
+            return [], False
+        allowed = {"collection", "gospel", "chapter", "pericope", "patristic_author"}
+        conditions: list[str] = []
+        parameters: list[object] = []
+        for key in allowed:
+            value = filters.get(key)
+            if value in (None, ""):
+                continue
+            if key in {"pericope", "patristic_author"}:
+                conditions.append(f"lower(cm.{key}) LIKE ?")
+                parameters.append(f"%{str(value).lower()}%")
+            else:
+                conditions.append(f"cm.{key} = ?")
+                parameters.append(value)
+        verse_start = filters.get("verse_start")
+        verse_end = filters.get("verse_end") or verse_start
+        if verse_start is not None:
+            conditions.append("(cm.verse_end IS NULL OR cm.verse_end >= ?)")
+            parameters.append(int(verse_start))
+        if verse_end is not None:
+            conditions.append("(cm.verse_start IS NULL OR cm.verse_start <= ?)")
+            parameters.append(int(verse_end))
+        if not conditions:
+            return [], False
+        where = " AND ".join(conditions)
+        with self._connect() as db:
+            collection = filters.get("collection")
+            if collection:
+                collection_exists = db.execute(
+                    "SELECT 1 FROM chunk_metadata WHERE collection = ? LIMIT 1",
+                    (collection,),
+                ).fetchone() is not None
+                strict = collection_exists and any(
+                    filters.get(key) not in (None, "")
+                    for key in ("gospel", "chapter", "pericope", "patristic_author", "verse_start", "verse_end")
+                )
+            else:
+                strict = db.execute("SELECT 1 FROM chunk_metadata LIMIT 1").fetchone() is not None
+            rows = db.execute(
+                """
+                SELECT c.id,c.source,c.location,c.text,0.0 rank
+                FROM chunks AS c JOIN chunk_metadata AS cm ON cm.chunk_id = c.id
+                WHERE """ + where + " ORDER BY cm.chunk_sequence LIMIT ?",
+                (*parameters, min(max(int(limit), 1), 5000)),
+            ).fetchall()
+        return [dict(row) for row in rows], strict
+
     @staticmethod
     def _fuse_rankings(rankings: list[tuple[str, float, list[dict]]]) -> list[dict]:
         """Reciprocal Rank Fusion evita comparar BM25, bônus editoriais e metadados."""
@@ -439,7 +573,7 @@ class LocalVectorStore:
 
     def search(self, query: str, limit: int = 6, minimum_score: float = 0.08,
                source_filter: tuple[str, ...] | None = None, excluded_sources: tuple[str, ...] = (),
-               include_diagnostics: bool = False):
+               include_diagnostics: bool = False, metadata_filters: dict | None = None):
         analysis = analyze_query(query)
         normalized_query = analysis.folded
         preferred = source_filter or self._preferred_sources(normalized_query)
@@ -450,6 +584,7 @@ class LocalVectorStore:
             tuple(preferred),
             tuple(excluded_sources),
             bool(include_diagnostics),
+            tuple(sorted((str(key), str(value)) for key, value in (metadata_filters or {}).items())),
         )
         cached = self._cached_search(cache_key)
         if cached is not None:
@@ -464,15 +599,23 @@ class LocalVectorStore:
         variant_rows = self._variant_candidate_rows(analysis, preferred)
         expansion_rows = self._semantic_expansion_rows(analysis, preferred)
         metadata_rows = self._metadata_candidate_rows(analysis, preferred)
+        structured_rows, structured_filter_is_strict = self._structured_metadata_rows(metadata_filters)
+        structured_ids = {str(row["id"]) for row in structured_rows}
         guidance_rows = self._guided_candidate_rows(index_guidance, preferred) if nominal_term else []
         anchor_rows = self._nominal_anchor_rows(nominal_term, preferred, excluded_sources) if nominal_term else []
         # Fallback global obrigatório: uma via editorial nunca substitui a busca em toda a base.
-        global_rows = self._candidate_rows(query, limit=1200, additional_terms=context_terms)
+        global_rows = self._candidate_rows(
+            query,
+            limit=1200,
+            preferred=preferred,
+            additional_terms=context_terms,
+        )
         rankings = [
             ("lexical_exact", 2.4, exact_rows),
             ("lexical_variant", 1.7, variant_rows),
             ("semantic_expansion", 0.75, expansion_rows),
             ("title_metadata", 2.1, metadata_rows),
+            ("structured_metadata", 2.6, structured_rows),
             ("index_guidance", 1.9, guidance_rows),
             ("nominal_anchor", 2.0, anchor_rows),
             ("global_fallback", 1.0, global_rows),
@@ -481,6 +624,9 @@ class LocalVectorStore:
         ranked: list[dict] = []
         eliminated: list[dict] = []
         for row in candidate_rows:
+            if structured_filter_is_strict and str(row["id"]) not in structured_ids:
+                eliminated.append({"id": row["id"], "reason": "structured_metadata_filter"})
+                continue
             source_norm = self._normalize(row["source"])
             if preferred and not self._source_matches(source_norm, preferred):
                 eliminated.append({"id": row["id"], "reason": "metadata_filter"})
@@ -502,7 +648,7 @@ class LocalVectorStore:
             strategies = set(row.get("retrieval_strategies", []))
             protected = bool(
                 coverage or variant_hits or index_bonus or nominal_bonus
-                or strategies & {"lexical_exact", "title_metadata", "index_guidance", "nominal_anchor"}
+                or strategies & {"lexical_exact", "title_metadata", "structured_metadata", "index_guidance", "nominal_anchor"}
             )
             if not protected and expanded_hits == 0:
                 eliminated.append({"id": row["id"], "reason": "no_query_evidence"})
@@ -526,7 +672,7 @@ class LocalVectorStore:
         ]
         for item in ranked:
             item.pop("_index_chunk", None)
-        results = self._diversify(ranked, limit, bool(preferred))
+        results = self._enrich_chunk_metadata(self._diversify(ranked, limit, bool(preferred)))
         diagnostics = {
             "query": analysis.to_dict(),
             "embedding": {
@@ -536,6 +682,7 @@ class LocalVectorStore:
             },
             "collection": str(self.index_file),
             "metadata_filters": list(preferred),
+            "structured_metadata_filters": dict(metadata_filters or {}),
             "excluded_sources": list(excluded_sources),
             "minimum_score_requested": minimum_score,
             "threshold_policy": "dynamic_exact_and_lexical_matches_are_protected",
@@ -563,14 +710,18 @@ class LocalVectorStore:
         minimum_score: float = 0.08,
         excluded_sources: tuple[str, ...] = (),
         include_diagnostics: bool = False,
+        source_filter: tuple[str, ...] | None = None,
+        metadata_filters: dict | None = None,
     ):
         source_order = SINGLE_TERM_ORDERED_SOURCES if self._single_query_term(query) else ORDERED_SOURCES
         search_result = self.search(
             query,
             limit=300,
             minimum_score=minimum_score,
+            source_filter=source_filter,
             excluded_sources=excluded_sources,
             include_diagnostics=include_diagnostics,
+            metadata_filters=metadata_filters,
         )
         if include_diagnostics:
             candidates, diagnostics = search_result
@@ -609,6 +760,110 @@ class LocalVectorStore:
             return ordered, diagnostics
         return ordered
 
+    def _enrich_chunk_metadata(self, results: list[dict]) -> list[dict]:
+        identifiers = [str(item.get("id") or "") for item in results if item.get("id")]
+        if not identifiers:
+            return results
+        metadata_by_id: dict[str, dict] = {}
+        with self._connect() as db:
+            for start in range(0, len(identifiers), 400):
+                batch = identifiers[start:start + 400]
+                placeholders = ",".join("?" for _ in batch)
+                rows = db.execute(
+                    f"SELECT * FROM chunk_metadata WHERE chunk_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    raw = dict(row)
+                    extra = json.loads(raw.pop("metadata_json") or "{}")
+                    raw["patristic_authors"] = json.loads(raw.pop("patristic_authors_json") or "[]")
+                    raw["attributions"] = json.loads(raw.pop("attributions_json") or "[]")
+                    raw.pop("chunk_id", None)
+                    metadata_by_id[str(row["chunk_id"])] = {**extra, **raw}
+        for item in results:
+            item.update(metadata_by_id.get(str(item.get("id") or ""), {}))
+        return results
+
+    def fetch_adjacent_chunks(
+        self,
+        chunk_ids: list[str] | tuple[str, ...],
+        *,
+        radius: int = 1,
+        collection: str = "",
+        limit: int = 120,
+    ) -> list[dict]:
+        identifiers = tuple(dict.fromkeys(str(value) for value in chunk_ids if value))
+        if not identifiers:
+            return []
+        radius = min(max(int(radius), 1), 3)
+        selected_ids = set(identifiers)
+        candidates: dict[str, dict] = {}
+        with self._connect() as db:
+            sequences_by_document: dict[str, set[int]] = {}
+            for start in range(0, len(identifiers), 300):
+                batch = identifiers[start:start + 300]
+                placeholders = ",".join("?" for _ in batch)
+                anchors = db.execute(
+                    f"SELECT document_id,chunk_sequence FROM chunk_metadata WHERE chunk_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for anchor in anchors:
+                    sequence = int(anchor["chunk_sequence"])
+                    target = sequences_by_document.setdefault(str(anchor["document_id"]), set())
+                    target.update(range(max(sequence - radius, 1), sequence + radius + 1))
+            for document_id, sequences in sequences_by_document.items():
+                ordered_sequences = sorted(sequences)
+                for start in range(0, len(ordered_sequences), 400):
+                    batch = ordered_sequences[start:start + 400]
+                    placeholders = ",".join("?" for _ in batch)
+                    collection_clause = " AND cm.collection = ?" if collection else ""
+                    parameters: list[object] = [document_id, *batch]
+                    if collection:
+                        parameters.append(collection)
+                    rows = db.execute(
+                        """
+                        SELECT c.id,c.source,c.location,c.text,0.0 rank
+                        FROM chunks AS c JOIN chunk_metadata AS cm ON cm.chunk_id = c.id
+                        WHERE cm.document_id = ? AND cm.chunk_sequence IN ("""
+                        + placeholders + ")" + collection_clause + " ORDER BY cm.chunk_sequence",
+                        parameters,
+                    ).fetchall()
+                    for row in rows:
+                        if row["id"] not in selected_ids:
+                            candidates[str(row["id"])] = dict(row)
+                        if len(candidates) >= limit:
+                            break
+                if len(candidates) >= limit:
+                    break
+        adjacent = self._enrich_chunk_metadata(list(candidates.values())[:limit])
+        for item in adjacent:
+            item.update(
+                score=0.45,
+                score_normalized=0.31,
+                retrieval_strategies=["adjacent_chunk"],
+                categoria="Catena Áurea — continuidade",
+            )
+        return self._enrich_references(adjacent)
+
+    def collection_version(self, collection: str) -> str:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT c.source,f.size,f.mtime_ns,COUNT(*) AS chunk_count
+                FROM chunks AS c
+                JOIN chunk_metadata AS cm ON cm.chunk_id = c.id
+                LEFT JOIN files AS f ON f.source = c.source
+                WHERE cm.collection = ?
+                GROUP BY c.source,f.size,f.mtime_ns
+                ORDER BY c.source
+                """,
+                (collection,),
+            ).fetchall()
+        if not rows:
+            return "missing"
+        material = json.dumps([tuple(row) for row in rows], ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
     def _enrich_references(self, results: list[dict]) -> list[dict]:
         for item in results:
             normalized = self._normalize(item["source"])
@@ -620,6 +875,16 @@ class LocalVectorStore:
                     refs = re.findall(r"\b(1[0-9]{3}|2[0-8][0-9]{2})\.\s", text)
             elif "biblia" in normalized:
                 refs = [re.sub(r"\s*,\s*", ",", match.group()) for match in BIBLE_REFERENCE_PATTERN.finditer(text)]
+            elif item.get("collection") == CATENA_COLLECTION and item.get("gospel") and item.get("chapter"):
+                abbreviation = {
+                    "Mateus": "Mt", "Marcos": "Mc", "Lucas": "Lc", "João": "Jo",
+                }.get(str(item.get("gospel")), str(item.get("gospel")))
+                reference = f"{abbreviation} {item['chapter']}"
+                if item.get("verse_start"):
+                    reference += f",{item['verse_start']}"
+                    if item.get("verse_end") and item["verse_end"] != item["verse_start"]:
+                        reference += f"–{item['verse_end']}"
+                refs = [reference]
             item["referencias"] = list(dict.fromkeys(refs))[:12]
         return results
 
@@ -1009,9 +1274,30 @@ class LocalVectorStore:
         with self._connect() as db:
             documents = db.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             chunks = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            catena_chunks = db.execute(
+                "SELECT COUNT(*) FROM chunk_metadata WHERE collection = ?",
+                (CATENA_COLLECTION,),
+            ).fetchone()[0]
+            catena_documents = db.execute(
+                "SELECT COUNT(DISTINCT document_id) FROM chunk_metadata WHERE collection = ?",
+                (CATENA_COLLECTION,),
+            ).fetchone()[0]
             updated = db.execute("SELECT value FROM metadata WHERE key='updated_at'").fetchone()
+            catena_indexing_version = db.execute(
+                "SELECT value FROM metadata WHERE key='catena_indexing_version'"
+            ).fetchone()
             errors = [{"arquivo": row["source"], "erro": row["error"]} for row in db.execute("SELECT * FROM errors")]
-        return {"documentos": documents, "trechos": chunks, "ultima_atualizacao": updated[0] if updated else None, "erros": errors}
+        return {
+            "documentos": documents,
+            "trechos": chunks,
+            "ultima_atualizacao": updated[0] if updated else None,
+            "erros": errors,
+            "catena_aurea": {
+                "documentos": catena_documents,
+                "trechos": catena_chunks,
+                "indexing_version": catena_indexing_version[0] if catena_indexing_version else None,
+            },
+        }
 
     def document_names(self) -> list[str]:
         with self._connect() as db:

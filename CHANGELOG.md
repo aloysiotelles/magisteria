@@ -4,6 +4,16 @@ Todas as alterações relevantes deste projeto serão registradas aqui.
 
 ## Unreleased
 
+## 0.9.3
+
+- Consultas sobre os quatro Evangelhos passam a ser classificadas como `GOSPEL_QUERY`, inclusive por nome tradicional de episódio, personagem, milagre, parábola e pedido pastoral sem referência explícita.
+- A recuperação evangélica começa obrigatoriamente por uma busca exclusiva na Catena Áurea, percorre passagens paralelas, amplia resultados por iteração e carrega chunks adjacentes antes de consultar o restante do acervo.
+- A Catena Áurea em português foi integrada ao repositório e recebe metadados estruturados de Evangelho, capítulo, lição, perícope, autoria explícita, obra indicada, documento e adjacência.
+- O contexto preserva interpretações distintas e autoria patrística, impede atribuições não rastreáveis e apresenta Scripture, Catena, Magistério e síntese teológica como camadas distintas.
+- O cache evangélico agora considera passagens, paralelos, idioma, profundidade, versão da política e versão da coleção Catena, invalidando evidências anteriores à nova política.
+- A telemetria registra cumprimento da política Catena, cobertura de paralelos, autores, adjacências, busca complementar, fontes e validações sem armazenar o texto da consulta.
+- Preparado o Android `0.9.3 (903)` para atualização na faixa de testes da Play Console.
+
 ## 0.9.2
 
 - Incorporadas diretrizes permanentes de linguagem humana, fluida, acolhedora e pastoral, sem reduzir a precisão doutrinária ou a cobertura solicitada.
