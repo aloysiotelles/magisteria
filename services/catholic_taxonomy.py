@@ -5,7 +5,7 @@ import re
 import unicodedata
 
 
-TAXONOMY_VERSION = "2026.07.2"
+TAXONOMY_VERSION = "2026.08.1"
 
 
 def fold_text(text: str) -> str:
@@ -145,7 +145,7 @@ TOPICS: tuple[TopicSpec, ...] = (
     ),
     TopicSpec(
         "credo_apostolico", "Artigos do Credo Apostólico", "teologia_dogmatica",
-        ("credo apostolico", "artigos do credo", "simbolo dos apostolos"),
+        ("credo apostolico", "artigos do credo", "simbolo dos apostolos", "credo"),
         ("Creio em Deus Pai", "Creio em Jesus Cristo", "Concebido pelo Espírito Santo", "Paixão e sepultamento", "Descida à mansão dos mortos e Ressurreição", "Ascensão", "Juízo", "Espírito Santo", "Igreja e comunhão dos santos", "Remissão dos pecados", "Ressurreição da carne", "Vida eterna"),
         COMMON_DOCTRINAL_DIMENSIONS,
         ("Sagrada Escritura", "Símbolos da fé", "Catecismo", "Concílios"),
@@ -177,8 +177,14 @@ TOPICS: tuple[TopicSpec, ...] = (
     ),
     TopicSpec(
         "pai_nosso", "Petições do Pai-Nosso", "oracao_espiritualidade",
-        ("pai nosso", "peticoes do pai nosso", "oração do senhor"),
-        ("Santificado seja o vosso nome", "Venha a nós o vosso Reino", "Seja feita a vossa vontade", "O pão nosso de cada dia", "Perdoai-nos as nossas ofensas", "Não nos deixeis cair em tentação", "Livrai-nos do mal"),
+        ("pai nosso", "pai-nosso", "peticoes do pai nosso", "oração do senhor"),
+        (
+            "Introdução à Oração do Senhor", "Pai nosso que estais nos céus",
+            "Santificado seja o vosso nome", "Venha a nós o vosso Reino",
+            "Seja feita a vossa vontade", "O pão nosso de cada dia",
+            "Perdoai-nos as nossas ofensas", "Não nos deixeis cair em tentação",
+            "Livrai-nos do mal", "Doxologia e Amém",
+        ),
         ("texto bíblico", "significado teológico", "atitude espiritual", "aplicação à oração"),
         ("Sagrada Escritura", "Catecismo", "Tradição litúrgica"),
         ("Oração de Jesus", "Formas de oração", "Liturgia das Horas"),

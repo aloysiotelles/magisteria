@@ -4,6 +4,16 @@ Todas as alterações relevantes deste projeto serão registradas aqui.
 
 ## Unreleased
 
+## 0.9.4
+
+- Incorporada uma diretriz geral de pesquisa e redação para todas as respostas do MAGISTERIA, com análise de cobertura, profundidade proporcional, distinções doutrinais e validação final silenciosa.
+- Mandamentos, sacramentos, artigos do Credo e Pai-Nosso agora acionam as faixas correspondentes do Catecismo e listas temáticas próprias, sem omitir partes de conjuntos pedidos integralmente.
+- Pesquisas doutrinais pertinentes consultam em vias próprias o Catecismo, **A Fé Explicada** e a **Suma Teológica**, integrando-as segundo o grau de autoridade de cada fonte.
+- Buscas obrigatórias são reformuladas quando a primeira tentativa não retorna evidência e as fontes encontradas têm espaço reservado no contexto final.
+- A prioridade já existente da Catena Áurea para passagens concretas dos Evangelhos foi preservada e passou a receber, depois dela, as mesmas complementações doutrinais pertinentes.
+- Reforçada a proibição de expor linguagem interna de recuperação e de inventar referências, autores, parágrafos, artigos ou citações.
+- Preparado o Android `0.9.4 (904)` para atualização na faixa ativa da Play Console.
+
 ## 0.9.3
 
 - Consultas sobre os quatro Evangelhos passam a ser classificadas como `GOSPEL_QUERY`, inclusive por nome tradicional de episódio, personagem, milagre, parábola e pedido pastoral sem referência explícita.

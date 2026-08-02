@@ -14,6 +14,7 @@ from services.localization import (
     normalize_language,
 )
 from services.query_analysis import QueryType, analyze_query
+from services.research_policy import build_research_directive
 from services.response_planning import ResponsePlan, build_response_plan
 from services.response_quality import (
     CoverageValidator,
@@ -23,11 +24,10 @@ from services.response_quality import (
 
 
 ABSOLUTE_RULE = (
-    "Responda somente com base nos trechos fornecidos. Se eles sustentarem apenas parte do pedido, "
-    "responda com prudência somente a parte sustentada, sem expor ao usuário o funcionamento interno da pesquisa. "
-    "Quando recebeu trechos relacionados, nunca transforme uma limitação pontual em uma declaração de ausência geral. "
-    "Quando a evidência estiver fraca ou parecer insuficiente, dê preferência a aprofundar a resposta com base em A Fé Explicada, "
-    "se houver trechos dessa obra entre os cadastrados, antes de limitar a explicação."
+    "Responda somente com base nos trechos fornecidos após as buscas sucessivas do planejamento. Integre toda evidência "
+    "pertinente disponível e cubra integralmente o pedido na primeira resposta. Se ainda assim um detalhe não estiver "
+    "seguramente sustentado, formule somente o que for seguro, com discrição e sem expor o funcionamento interno da "
+    "pesquisa. Nunca transforme uma limitação pontual em declaração de ausência geral."
 )
 NO_DOCUMENTS_MESSAGE = answer_message("no_documents")
 NOT_FOUND_MESSAGE = NO_DOCUMENTS_MESSAGE
@@ -91,6 +91,7 @@ class AnswerService:
     ) -> dict:
         selected_language = normalize_language(language)
         plan = plan or build_response_plan(question, selected_language)
+        research_directive = build_research_directive(question, plan)
         if not chunks:
             if self.api_key and not plan.is_gospel:
                 return await self._answer_from_general_catholic_teaching(
@@ -217,6 +218,7 @@ class AnswerService:
             action = "rewrite"
             coverage = self.coverage_validator.validate_answer(plan, final_answer, len(chunks))
             invalid_attributions = self.attribution_validator.validate(final_answer, chunks)
+        final_answer = self._sanitize_pipeline_language(final_answer)
         used_indexes = self.coverage_validator.used_source_indexes(final_answer, len(chunks))
         return {
             "resposta": final_answer,
@@ -234,6 +236,7 @@ class AnswerService:
                 "passed": not invalid_attributions,
                 "invalid_attributions": list(invalid_attributions),
             },
+            "research_policy": research_directive.to_dict(),
         }
 
     async def _answer_from_general_catholic_teaching(
@@ -262,6 +265,7 @@ class AnswerService:
                     "Escritura, a Tradição, o Magistério e o Catecismo quando isso ajudar a situar o ensinamento, sem "
                     "simular uma referência precisa. Responda integralmente ao que for possível afirmar com segurança. "
                     f"Adapte a linguagem ao perfil informado: {plan.profile_instruction}. "
+                    f"{build_research_directive(question, plan).instruction()} "
                     f"{self._structure_instruction(plan)} "
                     f"{self._format_instruction(question)} "
                     f"{localized_writing_standard(JOHN_PAUL_II_WRITING_STANDARD, language)} "
@@ -282,7 +286,7 @@ class AnswerService:
             raise RuntimeError(answer_message("technical_failure", language))
         coverage = self.coverage_validator.validate_answer(plan, answer, 0)
         return {
-            "resposta": answer,
+            "resposta": self._sanitize_pipeline_language(answer),
             "status_revisao": "general_guidance",
             "motivo_revisao": "Síntese pastoral prudente baseada nos ensinamentos gerais da Igreja.",
             "coverage": coverage.to_dict(),
@@ -381,6 +385,7 @@ class AnswerService:
     ) -> dict:
         selected_language = normalize_language(language)
         plan = plan or build_response_plan(question, selected_language)
+        research_directive = build_research_directive(question, plan)
         if not chunks:
             return {"approved": False, "reason": "Sem base documental suficiente."}
         if not self.api_key:
@@ -447,6 +452,7 @@ class AnswerService:
             f" {self._format_instruction(question)}"
             f" {self._catechesis_instruction(question)}"
             f" {gospel_review}"
+            f" {research_directive.instruction()}"
         )
         response = await self.client.responses.create(
             model=self.review_model,
@@ -458,6 +464,7 @@ class AnswerService:
                 f"METADADOS RASTREÁVEIS:\n{source_metadata}\n\n"
                 f"AMOSTRAS DE ESTILO:\n{style_context}\n\n"
                 f"PLANO DE COBERTURA:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}\n\n"
+                f"DIRETRIZ DE PESQUISA E VALIDAÇÃO:\n{json.dumps(research_directive.to_dict(), ensure_ascii=False)}\n\n"
                 f"RESPOSTA A VALIDAR:\n{answer}"
             ),
             max_output_tokens=700,
@@ -484,6 +491,21 @@ class AnswerService:
                 "sin base documental", "la base no contiene",
             )
         )
+
+    @staticmethod
+    def _sanitize_pipeline_language(text: str) -> str:
+        replacements = (
+            (r"\bos (?:trechos|chunks) (?:fornecidos|recuperados|cadastrados)\b", "as fontes consultadas"),
+            (r"\bnos (?:trechos|chunks) (?:fornecidos|recuperados|cadastrados)\b", "nas fontes consultadas"),
+            (r"\bsegundo os (?:trechos|chunks)\b", "segundo as fontes consultadas"),
+            (r"\ba base (?:documental|vetorial)\b", "as fontes consultadas"),
+            (r"\ba busca (?:vetorial|documental)\b", "a pesquisa"),
+            (r"\bo contexto recuperado\b", "o conjunto das fontes consultadas"),
+        )
+        sanitized = text
+        for pattern, replacement in replacements:
+            sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+        return sanitized
 
     @staticmethod
     def _is_catechesis_request(question: str) -> bool:
@@ -524,6 +546,7 @@ class AnswerService:
         plan: ResponsePlan | None = None,
     ) -> str:
         plan = plan or build_response_plan(question, language)
+        research_directive = build_research_directive(question, plan)
         context = "\n\n".join(
             f"[F{number} — {chunk['source']}, {chunk['location']} — componente: {chunk.get('component', 'visão geral')}]\n{chunk['text']}"
             for number, chunk in enumerate(chunks, start=1)
@@ -540,6 +563,7 @@ class AnswerService:
                 "somente quando a afirmação estiver apoiada no trecho correspondente. Nunca invente uma marcação. "
                 "Entregue somente a resposta reescrita, sem comentários sobre a revisão. "
                 f"{localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, language)} "
+                f"{research_directive.instruction()} "
                 f"{self._format_instruction(question)} "
                 f"{self._catechesis_instruction(question)}"
                 f"{answer_language_instruction(language)}"
@@ -547,6 +571,7 @@ class AnswerService:
             "input": (
                 f"CONSULTA:\n{question}\n\nMOTIVO DA REVISÃO:\n{review_reason}\n\n"
                 f"PLANO:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}\n\n"
+                f"DIRETRIZ DE PESQUISA:\n{json.dumps(research_directive.to_dict(), ensure_ascii=False)}\n\n"
                 f"RESPOSTA ORIGINAL:\n{answer}\n\nTRECHOS:\n{context}"
             ),
             "max_output_tokens": plan.max_output_tokens,
@@ -572,6 +597,7 @@ class AnswerService:
             for number, chunk in enumerate(chunks, start=1)
         )
         target_text = "; ".join(targets)
+        research_directive = build_research_directive(question, plan)
         result = await self._create_complete_text(
             {
                 "model": self.review_model,
@@ -583,6 +609,7 @@ class AnswerService:
                     "Se um aspecto específico não estiver comprovado, declare essa limitação dentro da subseção, "
                     "mas não omita o item. Termine com síntese integradora somente se ela estiver pendente. "
                     f"{DoctrinalConsistencyValidator.instruction()} "
+                    f"{research_directive.instruction()} "
                     f"{localized_writing_standard(MAGISTERIA_LANGUAGE_STANDARD, language)} "
                     f"{self._format_instruction(question)} "
                     f"{answer_language_instruction(language)}"
@@ -591,6 +618,7 @@ class AnswerService:
                     f"CONSULTA:\n{question}\n\nITENS A COMPLETAR:\n{target_text}\n\n"
                     f"RESPOSTA JÁ PRODUZIDA (não repetir):\n{current_answer}\n\n"
                     f"PLANO COMPLETO:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}\n\n"
+                    f"DIRETRIZ DE PESQUISA:\n{json.dumps(research_directive.to_dict(), ensure_ascii=False)}\n\n"
                     f"TRECHOS AUTORIZADOS:\n{context}"
                 ),
                 "max_output_tokens": min(
@@ -682,6 +710,7 @@ class AnswerService:
     ) -> dict:
         analysis = analyze_query(question)
         plan = plan or build_response_plan(question, language)
+        research_directive = build_research_directive(question, plan)
         context = "\n\n".join(
             f"[F{number} — ORDEM {chunk.get('ordem', 1)} — {chunk.get('categoria', 'Documento')} — "
             f"{chunk['source']}, {chunk['location']} — componente: {chunk.get('component', 'visão geral')}]\n{chunk['text']}"
@@ -716,6 +745,7 @@ class AnswerService:
                 f"{thematic_instruction} "
                 f"{structure_instruction} "
                 f"{gospel_instruction} "
+                f"{research_directive.instruction()} "
                 f"Adapte a linguagem ao perfil informado: {plan.profile_instruction}. "
                 "Não use memória, conhecimento geral, inferências externas ou pesquisa na internet. "
                 "Não mencione fontes que não estejam nos trechos. "
@@ -757,6 +787,7 @@ class AnswerService:
                 f"PERGUNTA ATUAL:\n{question}\n\nTRECHOS CADASTRADOS EM ORDEM EDITORIAL:\n{context}"
                 f"\n\nMETADADOS DOCUMENTAIS RASTREÁVEIS DOS TRECHOS:\n{source_metadata}"
                 f"\n\nPLANO INTERNO DE COBERTURA:\n{json.dumps(plan.to_dict(), ensure_ascii=False)}"
+                f"\n\nDIRETRIZ INTERNA DE PESQUISA E VALIDAÇÃO:\n{json.dumps(research_directive.to_dict(), ensure_ascii=False)}"
                 f"\n\nAMOSTRAS DE ESTILO DAS HOMILIAS:\n{style_context}"
             ),
             "max_output_tokens": plan.max_output_tokens,

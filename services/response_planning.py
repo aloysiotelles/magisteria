@@ -8,9 +8,10 @@ import re
 from services.catholic_taxonomy import TAXONOMY_VERSION, TopicSpec, classify_category, fold_text, match_topic
 from services.gospel_policy import GospelQueryContext, classify_gospel_query
 from services.query_analysis import QueryType, analyze_query
+from services.research_policy import match_doctrine_profile, policy_response_components
 
 
-RESPONSE_STRATEGY_VERSION = "catena-gospel-priority-1"
+RESPONSE_STRATEGY_VERSION = "general-research-policy-2"
 
 
 class DepthLevel(StrEnum):
@@ -178,7 +179,8 @@ def build_response_plan(
     user_profile: str = "adulto_leigo",
 ) -> ResponsePlan:
     gospel = classify_gospel_query(question)
-    spec = match_topic(question)
+    doctrine_profile = match_doctrine_profile(question)
+    spec = None if doctrine_profile else match_topic(question)
     asks_summary = bool(SUMMARY_PATTERN.search(question))
     composite = bool(gospel.broad or (spec and (spec.components or not spec.closed_set)) or (
         ENUMERATIVE_PATTERN.search(question) and len(question.split()) > 2
@@ -191,9 +193,28 @@ def build_response_plan(
     else:
         depth = DepthLevel.EXPLANATORY
 
-    theme = gospel.episode if gospel.is_gospel else spec.title if spec else _fallback_theme(question)
-    category = "evangelhos" if gospel.is_gospel else classify_category(question, spec)
-    components = gospel.components if gospel.broad else spec.components if spec and composite else ()
+    theme = (
+        gospel.episode if gospel.is_gospel
+        else doctrine_profile.title if doctrine_profile
+        else spec.title if spec
+        else _fallback_theme(question)
+    )
+    doctrine_category = {
+        "mandamento": "moral_crista",
+        "sacramento": "sacramentos_liturgia",
+        "credo": "teologia_dogmatica",
+    }.get(doctrine_profile.family, "catequese_geral") if doctrine_profile else ""
+    category = "evangelhos" if gospel.is_gospel else doctrine_category or classify_category(question, spec)
+    policy_components = policy_response_components(question)
+    components = (
+        gospel.components if gospel.broad
+        else policy_components
+        if policy_components
+        else spec.components if spec and composite
+        else ()
+    )
+    if policy_components:
+        composite = True
     if depth == DepthLevel.SUMMARY:
         max_context_tokens, max_output_tokens, minimum_chars = 4200, 1200, 70
     elif depth == DepthLevel.DEEP:
@@ -219,9 +240,15 @@ def build_response_plan(
     topic_key = (
         f"gospel_{gospel.episode_key}"
         if gospel.is_gospel
+        else doctrine_profile.key if doctrine_profile
         else spec.key if spec else re.sub(r"[^a-z0-9]+", "_", fold_text(theme)).strip("_")[:100]
     )
-    title = gospel.episode if gospel.is_gospel else spec.title if spec else theme[:120]
+    title = (
+        gospel.episode if gospel.is_gospel
+        else doctrine_profile.title if doctrine_profile
+        else spec.title if spec
+        else theme[:120]
+    )
     profile = user_profile if user_profile in PROFILE_INSTRUCTIONS else "adulto_leigo"
     return ResponsePlan(
         theme=theme,
@@ -235,11 +262,14 @@ def build_response_plan(
         dimensions=(
             ("sentido literal", "contexto narrativo", "cristologia", "sentido moral", "sentido espiritual", "Igreja", "sacramentos", "escatologia")
             if gospel.is_gospel
+            else doctrine_profile.aspects if doctrine_profile and policy_components
             else spec.dimensions if spec else _generic_dimensions(category)
         ),
         source_types=(
             ("Sagrada Escritura", "Catena Áurea", "Catecismo", "Magistério", "Padres e Doutores", "Liturgia")
             if gospel.is_gospel
+            else ("Sagrada Escritura", "Catecismo", "A Fé Explicada", "Suma Teológica", "Magistério")
+            if doctrine_profile
             else spec.source_types if spec else ("Sagrada Escritura", "Catecismo", "Magistério", "fontes do acervo")
         ),
         closed_set=spec.closed_set if spec else False,

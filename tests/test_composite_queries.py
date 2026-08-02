@@ -198,7 +198,7 @@ def test_layered_retrieval_cache_and_corpus_invalidation(tmp_path: Path):
     third = orchestrator.retrieve("sete sacramentos", plan, minimum_score=0.01)
 
     assert first.cache_hit is False
-    assert calls_after_first == 9  # visão geral + taxonomia + um bloco por sacramento
+    assert calls_after_first == 18  # camadas gerais + blocos + Catecismo por sacramento + fontes auxiliares
     assert second.cache_hit is True
     assert "answer" not in cached_payload.lower()
     assert "Batismo" in summary[0]

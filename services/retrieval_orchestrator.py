@@ -16,6 +16,7 @@ from services.gospel_policy import (
     patristic_authors,
 )
 from services.query_analysis import analyze_query
+from services.research_policy import ResearchDirective, build_research_directive
 from services.response_planning import ResponsePlan
 from services.semantic_cache import SemanticCache
 
@@ -141,6 +142,14 @@ class ContextDeduplicator:
                         attributions.append(attribution)
                 if attributions:
                     merged["attributions"] = attributions
+                research_lanes = list(merged.get("research_lanes") or ())
+                for lane in chunk.get("research_lanes") or ():
+                    if lane not in research_lanes:
+                        research_lanes.append(lane)
+                if research_lanes:
+                    merged["research_lanes"] = tuple(research_lanes)
+                if chunk.get("research_required"):
+                    merged["research_required"] = True
                 continue
             fingerprints.add(fingerprint)
             token_sets.append(tokens)
@@ -158,6 +167,27 @@ class TokenBudgetManager:
         selected: list[dict] = []
         used_ids: set[str] = set()
         consumed = 0
+
+        # Reserve evidência das fontes que a diretriz tornou obrigatórias
+        # quando elas estão disponíveis no acervo.
+        required_lanes = tuple(dict.fromkeys(
+            lane
+            for item in chunks if item.get("research_required")
+            for lane in (item.get("research_lanes") or ())
+        ))
+        for lane in required_lanes:
+            candidate = next((
+                item for item in chunks
+                if lane in (item.get("research_lanes") or ())
+            ), None)
+            if not candidate:
+                continue
+            identifier = str(candidate.get("id") or id(candidate))
+            cost = self.estimate_tokens(candidate.get("text", ""))
+            if identifier not in used_ids and consumed + cost <= budget:
+                selected.append(candidate)
+                used_ids.add(identifier)
+                consumed += cost
 
         # Reserve one evidentiary chunk per active component before filling by rank.
         for component in plan.active_components:
@@ -236,6 +266,7 @@ class RetrievalOrchestrator:
         excluded_sources: tuple[str, ...] = (),
     ) -> RetrievalBundle:
         corpus_version = self.corpus_version()
+        research_directive = build_research_directive(search_query, plan)
         collection_version = self._catena_collection_version() if plan.is_gospel else ""
         technical_hints = self.semantic_cache.technical_source_hints(plan.topic_key, corpus_version)
         cached = self.semantic_cache.get(plan, corpus_version, collection_version)
@@ -247,6 +278,7 @@ class RetrievalOrchestrator:
                 else self.token_budget.select(ranked_cached, plan)
             )
             diagnostics = self._diagnostics(search_query, plan, chunks, [], True)
+            diagnostics["research_policy"] = research_directive.to_dict()
             if plan.is_gospel:
                 diagnostics.update(self._cached_gospel_diagnostics(plan, chunks, collection_version))
             return RetrievalBundle(
@@ -291,6 +323,15 @@ class RetrievalOrchestrator:
         candidates.extend({**chunk, "component": "Taxonomia e fontes"} for chunk in taxonomy_chunks)
         traces.append(taxonomy_trace)
 
+        policy_candidates, policy_traces = self._retrieve_policy_lanes(
+            research_directive,
+            plan,
+            minimum_score,
+            excluded_sources,
+        )
+        candidates.extend(policy_candidates)
+        traces.extend(policy_traces)
+
         if plan.composite:
             component_limit = 1 if plan.depth == "resumido" else 3
             dimension_hint = ", ".join(plan.dimensions[:4])
@@ -318,7 +359,47 @@ class RetrievalOrchestrator:
         selected = self.token_budget.select(deduplicated, plan)
         self.semantic_cache.put(plan, corpus_version, selected)
         diagnostics = self._diagnostics(search_query, plan, selected, traces, False)
+        diagnostics["research_policy"] = research_directive.to_dict()
         return RetrievalBundle(selected, diagnostics, False, corpus_version)
+
+    def _retrieve_policy_lanes(
+        self,
+        directive: ResearchDirective,
+        plan: ResponsePlan,
+        minimum_score: float,
+        excluded_sources: tuple[str, ...],
+    ) -> tuple[list[dict], list[dict]]:
+        candidates: list[dict] = []
+        traces: list[dict] = []
+        for lane in directive.source_lanes:
+            found, trace = self._search(
+                lane.query,
+                lane.limit,
+                max(minimum_score * 0.55, 0.01),
+                excluded_sources,
+                source_filter=lane.source_hints,
+            )
+            traces.append({**trace, "stage": "research_policy", "research_lane": lane.key, "attempt": 1})
+            if not found:
+                retry_query = (
+                    f"{plan.theme}. {lane.label}. "
+                    f"{', '.join(directive.coverage_items) or ', '.join(plan.dimensions)}"
+                )
+                found, trace = self._search(
+                    retry_query,
+                    lane.limit,
+                    max(minimum_score * 0.4, 0.005),
+                    excluded_sources,
+                    source_filter=lane.source_hints,
+                )
+                traces.append({**trace, "stage": "research_policy", "research_lane": lane.key, "attempt": 2})
+            candidates.extend({
+                **chunk,
+                "component": lane.label,
+                "research_lanes": (lane.key,),
+                "research_required": lane.required_when_available,
+            } for chunk in found)
+        return candidates, traces
 
     def _catena_collection_version(self) -> str:
         collection_version = getattr(self.vector_store, "collection_version", None)
@@ -545,6 +626,7 @@ class RetrievalOrchestrator:
             "gospel_completeness": completeness.to_dict(),
             "patristic_synthesis": patristic_synthesis,
             "catena_collection_version": collection_version,
+            "research_policy": build_research_directive(search_query, plan).to_dict(),
             "catena_exhaustion": {
                 "rounds": rounds_executed,
                 "searches": searches_executed,
@@ -632,6 +714,16 @@ class RetrievalOrchestrator:
                 )
                 candidates.extend(self._tag_repository_chunk(chunk, component) for chunk in found)
                 traces.append({**trace, "stage": "complementary_component", "component": component})
+
+        directive = build_research_directive(search_query, plan)
+        policy_candidates, policy_traces = self._retrieve_policy_lanes(
+            directive,
+            plan,
+            minimum_score,
+            repository_exclusions,
+        )
+        candidates.extend(self._tag_repository_chunk(chunk, chunk.get("component", "Complementação doutrinal")) for chunk in policy_candidates)
+        traces.extend(policy_traces)
         return candidates, traces
 
     @staticmethod
@@ -695,6 +787,8 @@ class RetrievalOrchestrator:
         scripture = [chunk for chunk in ranked if int(chunk.get("gospel_priority") or 20) == 1]
         catena = [chunk for chunk in ranked if 2 <= int(chunk.get("gospel_priority") or 20) <= 4]
         remaining = [chunk for chunk in ranked if int(chunk.get("gospel_priority") or 20) > 4]
+        required_remaining = [chunk for chunk in remaining if chunk.get("research_required")]
+        remaining = [*required_remaining, *(chunk for chunk in remaining if chunk not in required_remaining)]
         budget = plan.max_context_tokens
         selected_scripture: list[dict] = []
         selected_catena: list[dict] = []

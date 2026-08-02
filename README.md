@@ -4,7 +4,7 @@ Aplicativo web de pesquisa pastoral católica. O sistema lê arquivos locais, re
 
 ## O que esta versão faz
 
-A versão 0.9.3 aplica uma política própria às consultas sobre os Evangelhos: identifica a passagem e os paralelos, pesquisa primeiro e exclusivamente a Catena Áurea, amplia iterativamente os comentários pertinentes e somente depois complementa a resposta com Escritura, Catecismo, Magistério, Liturgia e demais fontes. A autoria patrística permanece rastreável, atribuições não confirmadas são bloqueadas e o cache é versionado pela política e pela coleção Catena. Autenticação, assinaturas, histórico, interface poliglota e o fluxo ordinário das consultas não evangélicas permanecem preservados.
+A versão 0.9.4 aplica uma diretriz geral a toda pesquisa e resposta: analisa a cobertura pedida, amplia a busca por vias documentais próprias, utiliza as faixas pertinentes do Catecismo e integra **A Fé Explicada** e a **Suma Teológica** segundo a função e a autoridade de cada obra. Mandamentos, sacramentos, Credo e Pai-Nosso recebem listas de cobertura específicas; pedidos integrais são validados antes da entrega. A política 0.9.3 da Catena Áurea permanece prioritária para passagens concretas dos Evangelhos e recebe as novas complementações somente depois da etapa patrística.
 
 - aceita arquivos PDF, DOCX, TXT e Markdown;
 - classifica semanticamente consultas evangélicas e aplica recuperação obrigatória `CATENA_AUREA` antes das demais coleções;

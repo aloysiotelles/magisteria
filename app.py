@@ -49,7 +49,7 @@ from services.retrieval_orchestrator import RetrievalOrchestrator
 from services.search_history import UserSearchHistory
 from services.semantic_cache import SemanticCache
 
-APP_VERSION = "0.9.3"
+APP_VERSION = "0.9.4"
 logger = logging.getLogger(__name__)
 
 vector_store = LocalVectorStore(

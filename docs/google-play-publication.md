@@ -13,10 +13,10 @@
 
 ## Próxima versão de teste preparada
 
-- Versão: `0.9.3 (903)`.
-- Escopo: prioridade obrigatória e exaustiva da Catena Áurea nas consultas evangélicas, paralelos, autoria rastreável, completude, cache e telemetria.
-- Publicar primeiro o backend `0.9.3` no Railway e validar `/health`, `/app-version`, os totais da base e os metadados da Catena; somente depois disponibilizar o AAB aos testadores, pois o mecanismo de resposta é executado no servidor.
-- Notas pt-BR prontas em `store-assets/android/release-notes-0.9.3-pt-BR.txt`.
+- Versão: `0.9.4 (904)`.
+- Escopo: diretriz geral de pesquisa, cobertura integral dos conjuntos pedidos, faixas próprias do Catecismo e integração de A Fé Explicada e Suma Teológica, preservando a prioridade da Catena Áurea nas consultas evangélicas.
+- Publicar primeiro o backend `0.9.4` no Railway e validar `/health`, `/app-version`, os totais da base e a política de pesquisa; somente depois disponibilizar o AAB aos testadores, pois o mecanismo de resposta é executado no servidor.
+- Notas pt-BR prontas em `store-assets/android/release-notes-0.9.4-pt-BR.txt`.
 - O workflow `Android signed release` produz AAB assinado, checksum SHA-256 e mapa de ofuscação quando os quatro segredos da upload key estiverem configurados no ambiente protegido `google-play`.
 
 ## Monetização adiada durante o teste fechado
@@ -77,7 +77,7 @@ O AAB assinado será produzido em `android/app/build/outputs/bundle/release/`. N
 - Publicador: Aloysio Telles de Moraes Netto (conta pessoal).
 - E-mail público de suporte: `aplicativo.magisteria@gmail.com`.
 - URLs públicas validadas: `https://magisteria-production.up.railway.app/privacy`, `/terms`, `/support` e `/account-deletion`.
-- Build de testes preparado: `versionName=0.9.3`, `versionCode=903`; incrementar o `versionCode` em cada upload posterior.
+- Build de testes preparado: `versionName=0.9.4`, `versionCode=904`; incrementar o `versionCode` em cada upload posterior.
 - Criar upload key offline e ativar Play App Signing.
 - Configurar secrets somente no GitHub Environment protegido se build assinado for automatizado.
 
